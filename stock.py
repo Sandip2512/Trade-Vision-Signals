@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 
-# EMA, MACD, RSI functions
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
 
@@ -63,8 +62,6 @@ def generate_signals(df):
     df['MACD'], df['Signal'] = MACD(df['close'])
     df['RSI'] = RSI(df['close'])
     df.dropna(inplace=True)
-
-    # Simplified buy/sell signals to ensure signals appear:
     df['Buy'] = (df['MACD'] > df['Signal']) & (df['RSI'] < 70)
     df['Sell'] = (df['MACD'] < df['Signal']) & (df['RSI'] > 30)
     return df
@@ -118,21 +115,27 @@ def plot_signals(df, title):
     st.plotly_chart(fig, use_container_width=True)
 
 # Streamlit UI
-st.title("Gold Intraday Trading Signals")
+st.title("Gold Trading Signals with Interval Selection")
+
+interval = st.selectbox(
+    "Select Time Interval",
+    options=["5min", "15min", "30min", "1h", "4h", "1day"],
+    index=1,
+    help="Choose the interval for intraday or daily data"
+)
 
 api_key = st.text_input("Enter your Twelve Data API Key for Gold", type="password")
 if not api_key:
     st.warning("Please enter your API key to fetch data.")
 else:
-    gold_df = fetch_gold_intraday(api_key)
+    gold_df = fetch_gold_intraday(api_key, interval=interval)
     if not gold_df.empty:
         gold_df = generate_signals(gold_df)
 
-        # Debug info - show counts of signals
         st.write(f"Buy signals count: {gold_df['Buy'].sum()}")
         st.write(f"Sell signals count: {gold_df['Sell'].sum()}")
 
-        plot_signals(gold_df, title="Gold Price with Buy/Sell Signals (15min)")
+        plot_signals(gold_df, title=f"Gold Price with Buy/Sell Signals ({interval})")
         st.dataframe(gold_df.tail(10))
     else:
         st.warning("No data available or API limit reached.")
