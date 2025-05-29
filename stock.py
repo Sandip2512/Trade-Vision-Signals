@@ -24,21 +24,19 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Load NSE Tickers ---
-@st.cache_data(show_spinner=False)
-def load_nse_tickers():
-    url = "https://raw.githubusercontent.com/datasets/nse/master/data/equities.csv"
-    try:
-        df = pd.read_csv(url)
-        if 'Symbol' in df.columns:
-            tickers = [str(sym).strip() + ".NS" for sym in df['Symbol'].dropna() if isinstance(sym, str)]
-            return tickers
-        else:
-            st.error("Symbol column not found in NSE data source.")
-            return []
-    except Exception as e:
-        st.error(f"Failed to fetch NSE tickers: {e}")
-        return []
+# --- Static list of popular NSE tickers (add more as needed) ---
+nse_tickers = [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "HINDUNILVR.NS",
+    "KOTAKBANK.NS",
+    "LT.NS",
+    "SBIN.NS",
+    "AXISBANK.NS"
+]
 
 # --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
@@ -49,14 +47,8 @@ st.image(
 )
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
-# --- Load Tickers ---
-tickers = load_nse_tickers()
-if not tickers:
-    st.warning("Unable to load tickers. Please try again later.")
-    st.stop()
-
 # --- User Inputs ---
-selected_ticker = st.selectbox("Choose NSE Stock", sorted(tickers))
+selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
@@ -68,7 +60,7 @@ else:
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
     end = st.date_input("End Date", pd.to_datetime("today"))
 
-# --- Fetch Data ---
+# --- Fetch Data using yfinance ---
 df = yf.download(selected_ticker, start=start, end=end, interval=interval)
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
@@ -109,7 +101,6 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 
 fig = go.Figure()
 
-# Candlestick for Intraday or Line chart for Daily
 if mode == 'Intraday':
     df.index = df.index.tz_convert('Asia/Kolkata')
     df_today = df.between_time("09:15", "15:30")
@@ -130,16 +121,13 @@ else:
 
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
 
-# EMA Line
 fig.add_trace(go.Scatter(x=df.index, y=df['EMA'], mode='lines', name=f'EMA{ema_period}', line=dict(color='orange')))
 
-# Buy/Sell Markers
 fig.add_trace(go.Scatter(x=buys.index, y=buys['High'] * 1.01, mode='markers', name='Buy Signal',
                          marker=dict(symbol='triangle-up', color='green', size=14)))
 fig.add_trace(go.Scatter(x=sells.index, y=sells['Low'] * 0.998, mode='markers', name='Sell Signal',
                          marker=dict(symbol='triangle-down', color='red', size=12)))
 
-# Layout
 fig.update_layout(
     xaxis_title="Date" if mode == 'Daily' else "Time",
     yaxis_title="Price (₹)",
