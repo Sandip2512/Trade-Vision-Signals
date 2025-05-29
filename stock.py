@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.graph_objects as go
-import pytz
 
 # ====== Indicators ======
 def EMA(series, period=20):
@@ -19,8 +18,8 @@ def RSI(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
@@ -38,7 +37,11 @@ def fetch_gold_data(api_key, interval):
     df = pd.DataFrame(data['values'])
     df['datetime'] = pd.to_datetime(df['datetime']).dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
     df.set_index('datetime', inplace=True)
-    df = df.astype(float)
+
+    # Convert only numeric columns to float
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
     df.sort_index(inplace=True)
     return df
 
@@ -86,26 +89,28 @@ def plot_signals(df, title):
         line=dict(color='orange')
     ))
 
+    # Add Buy signals slightly below low price for visibility
     fig.add_trace(go.Scatter(
         x=df[df['Buy']].index,
         y=df[df['Buy']]['low'] * 0.995,
         mode='markers',
         name='Buy Signal',
-        marker=dict(symbol='triangle-up', size=12, color='green')
+        marker=dict(symbol='triangle-up', size=14, color='green')
     ))
 
+    # Add Sell signals slightly above high price for visibility
     fig.add_trace(go.Scatter(
         x=df[df['Sell']].index,
         y=df[df['Sell']]['high'] * 1.005,
         mode='markers',
         name='Sell Signal',
-        marker=dict(symbol='triangle-down', size=12, color='red')
+        marker=dict(symbol='triangle-down', size=14, color='red')
     ))
 
     fig.update_layout(
         title=title,
         xaxis_title='Date (IST)',
-        yaxis_title='Price',
+        yaxis_title='Price (USD)',
         template='plotly_white',
         height=700
     )
@@ -126,15 +131,18 @@ if api_key:
         df = generate_signals(df)
         plot_signals(df, f"Gold (XAU/USD) - Buy/Sell Signals [{selected_tf}]")
 
-        latest_signal = df[df['Buy'] | df['Sell']].iloc[-1:]  # Most recent signal
+        latest_signal = df[df['Buy'] | df['Sell']]
         if not latest_signal.empty:
-            signal_time = latest_signal.index[0].strftime('%Y-%m-%d %H:%M')
-            if latest_signal['Buy'].iloc[0]:
+            last_signal = latest_signal.iloc[-1]
+            signal_time = last_signal.name.strftime('%Y-%m-%d %H:%M')
+            if last_signal['Buy']:
                 st.success(f"✅ BUY signal at {signal_time} IST")
-            elif latest_signal['Sell'].iloc[0]:
+            elif last_signal['Sell']:
                 st.error(f"❌ SELL signal at {signal_time} IST")
 
         st.subheader("📊 Latest Candles with Signals")
         st.dataframe(df.tail(10)[['open', 'high', 'low', 'close', 'EMA', 'RSI', 'MACD', 'Signal', 'Buy', 'Sell']])
+    else:
+        st.warning("No data available or API limit reached.")
 else:
     st.info("Please enter your Twelve Data API key to continue.")
