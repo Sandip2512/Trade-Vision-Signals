@@ -29,8 +29,12 @@ def RSI(series, period=14):
 @st.cache_data(show_spinner=False)
 def load_nse_tickers():
     url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         data = StringIO(response.text)
         df = pd.read_csv(data)
