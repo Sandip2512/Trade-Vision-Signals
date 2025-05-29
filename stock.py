@@ -3,20 +3,43 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from nsetools import Nse
+import requests
 
-# --- Fetch all NSE tickers dynamically ---
-@st.cache_data(ttl=86400)  # cache for 1 day
-def fetch_nse_tickers():
-    nse = Nse()
-    stock_dict = nse.get_stock_codes()
-    # Remove header key
-    if 'SYMBOL' in stock_dict:
-        del stock_dict['SYMBOL']
-    # Append .NS for yfinance
-    return [symbol + ".NS" for symbol in stock_dict.keys()]
+# --- Fetch all NSE stocks from official NSE CSV ---
+@st.cache_data(show_spinner=False)
+def fetch_all_nse_stocks():
+    url = "https://www1.nseindia.com/content/equities/EQUITY_L.csv"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
+    try:
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        from io import StringIO
+        csv_data = StringIO(response.text)
+        df = pd.read_csv(csv_data, skipinitialspace=True)
+        df_eq = df[df['SERIES'] == 'EQ']  # filter only Equity shares
+        tickers = df_eq['SYMBOL'].tolist()
+        return sorted([ticker + ".NS" for ticker in tickers])
+    except Exception as e:
+        st.error(f"Error fetching NSE stocks list: {e}")
+        # fallback static list in case of error
+        return [
+            "RELIANCE.NS",
+            "TCS.NS",
+            "INFY.NS",
+            "HDFCBANK.NS",
+            "ICICIBANK.NS",
+            "HINDUNILVR.NS",
+            "KOTAKBANK.NS",
+            "LT.NS",
+            "SBIN.NS",
+            "AXISBANK.NS"
+        ]
 
-nse_tickers = fetch_nse_tickers()
+# --- Fetch tickers for the selectbox ---
+nse_tickers = fetch_all_nse_stocks()
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -48,13 +71,13 @@ st.image(
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
 # --- User Inputs ---
-selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
+selected_ticker = st.selectbox("Choose NSE Stock", nse_tickers)
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    start = pd.to_datetime("today").normalize()  # today 00:00:00
-    end = pd.to_datetime("today").normalize() + pd.Timedelta(days=1)  # tomorrow 00:00:00 (to get full today data)
+    start = pd.to_datetime("today") - pd.Timedelta(days=5)
+    end = pd.to_datetime("today")
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
@@ -67,11 +90,6 @@ if df.empty:
     st.stop()
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
-
-# --- Filter Intraday data for today's trading hours only ---
-if mode == 'Intraday':
-    df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
-    df = df.between_time("09:15", "15:30")
 
 # --- Indicators ---
 ema_period = 20 if mode == 'Intraday' else 50
@@ -86,9 +104,14 @@ if df.empty:
     st.warning("No valid data after indicator calculation.")
     st.stop()
 
-# --- Buy and Sell Signals ---
+# --- Buy/Sell Signals ---
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
+
+# For Intraday mode, filter data between 09:15 to 15:30 IST
+if mode == 'Intraday':
+    df.index = df.index.tz_convert('Asia/Kolkata')
+    df = df.between_time("09:15", "15:30")
 
 # --- Insights ---
 st.subheader("Insights 📊")
