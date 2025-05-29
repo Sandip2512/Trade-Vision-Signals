@@ -1,180 +1,65 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import requests
 import os
+import yfinance as yf
+import plotly.graph_objects as go
 
-# --- Function to fetch NSE tickers and save CSV ---
-def fetch_nse_tickers():
-    url = 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050'
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    session = requests.Session()
-    # get cookies from homepage first
-    session.get('https://www.nseindia.com', headers=headers)
-    response = session.get(url, headers=headers)
-    data = response.json()
-    symbols = [item['symbol'] + ".NS" for item in data['data']]  # Add .NS for yfinance NSE tickers
-    df = pd.DataFrame(symbols, columns=['Symbol'])
-    df.to_csv('nse_stock_list.csv', index=False)
+# Function to fetch NSE tickers from Wikipedia
+def fetch_nse_tickers_wiki():
+    url = "https://en.wikipedia.org/wiki/List_of_NIFTY_50_companies"
+    tables = pd.read_html(url)
+    df = tables[0]
+    # Symbol column has the ticker, add .NS suffix for yfinance NSE tickers
+    df['Symbol'] = df['Symbol'].astype(str) + ".NS"
+    df[['Symbol']].to_csv("nse_stock_list.csv", index=False)
+    return df['Symbol'].tolist()
 
-# --- Function to fetch BSE tickers and save CSV ---
-def fetch_bse_tickers():
-    # BSE does not provide a simple API, so let's use a static sample list for demo purposes
-    # You can replace this with an actual source or manual CSV upload
-    bse_sample_symbols = ['500325.BO', '500209.BO', '532540.BO']  # Example: Reliance, Tata Motors, Infosys (BSE codes + .BO)
-    df = pd.DataFrame(bse_sample_symbols, columns=['Symbol'])
-    df.to_csv('bse_stock_list.csv', index=False)
+# Function to fetch BSE tickers from Wikipedia
+def fetch_bse_tickers_wiki():
+    url = "https://en.wikipedia.org/wiki/List_of_BSE_SENSEX_companies"
+    tables = pd.read_html(url)
+    df = tables[0]
+    # BSE codes need .BO suffix for yfinance
+    df['Code'] = df['Code'].astype(str) + ".BO"
+    df[['Code']].to_csv("bse_stock_list.csv", index=False)
+    return df['Code'].tolist()
 
-# --- Ensure ticker files exist ---
-if not os.path.exists('nse_stock_list.csv'):
+# Ensure ticker CSV files exist, else fetch them
+if not os.path.exists("nse_stock_list.csv"):
     try:
-        fetch_nse_tickers()
-        st.success("NSE ticker list fetched successfully.")
+        st.info("Fetching NSE tickers from Wikipedia...")
+        nse_tickers = fetch_nse_tickers_wiki()
+        st.success(f"NSE tickers saved to CSV. Total: {len(nse_tickers)}")
     except Exception as e:
         st.error(f"Failed to fetch NSE tickers: {e}")
 
-if not os.path.exists('bse_stock_list.csv'):
+if not os.path.exists("bse_stock_list.csv"):
     try:
-        fetch_bse_tickers()
-        st.success("BSE ticker list saved.")
+        st.info("Fetching BSE tickers from Wikipedia...")
+        bse_tickers = fetch_bse_tickers_wiki()
+        st.success(f"BSE tickers saved to CSV. Total: {len(bse_tickers)}")
     except Exception as e:
-        st.error(f"Failed to save BSE tickers: {e}")
+        st.error(f"Failed to fetch BSE tickers: {e}")
 
-# --- Load ticker lists ---
+# Load ticker lists
 try:
-    nse_df = pd.read_csv('nse_stock_list.csv')
-    bse_df = pd.read_csv('bse_stock_list.csv')
+    nse_df = pd.read_csv("nse_stock_list.csv")
+    bse_df = pd.read_csv("bse_stock_list.csv")
 except Exception as e:
     st.error(f"Error loading ticker lists: {e}")
     st.stop()
 
-all_tickers = list(nse_df['Symbol']) + list(bse_df['Symbol'])
+all_tickers = list(nse_df['Symbol']) + list(bse_df.iloc[:,0])  # BSE df has 'Code' col but safer to use first column
 
-# --- Technical Indicator Functions ---
-def EMA(series, period=20):
-    return series.ewm(span=period, adjust=False).mean()
+# Your existing Streamlit app below...
 
-def MACD(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line
-
-def RSI(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    RS = avg_gain / avg_loss
-    return 100 - (100 / (1 + RS))
-
-# --- App Header ---
-st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE & BSE Stocks")
-st.image(
-    "https://raw.githubusercontent.com/Sandip2512/Trade-Vision-Signals/main/Image%201.jpg",
-    caption="Market Trends 📊",
-    use_container_width=True
-)
-st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
-
-# --- User Inputs ---
 selected_ticker = st.selectbox("Choose Stock (NSE or BSE)", sorted(all_tickers))
-mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
-if mode == 'Intraday':
-    interval = '5m'
-    start = pd.to_datetime("today") - pd.Timedelta(days=5)
-    end = pd.to_datetime("today")
-else:
-    interval = '1d'
-    start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
-    end = st.date_input("End Date", pd.to_datetime("today"))
+# For demo, fetch last 30 days daily data:
+df = yf.download(selected_ticker, period="30d", interval="1d")
 
-# --- Fetch Data using yfinance ---
-df = yf.download(selected_ticker, start=start, end=end, interval=interval)
 if df.empty:
-    st.error("No data retrieved. Try changing ticker or date range.")
-    st.stop()
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
-
-# --- Indicators ---
-ema_period = 20 if mode == 'Intraday' else 50
-rsi_period = 7 if mode == 'Intraday' else 14
-
-df['EMA'] = EMA(df['Close'], ema_period)
-df['MACD'], df['Signal'] = MACD(df['Close'])
-df['RSI'] = RSI(df['Close'], rsi_period)
-
-df.dropna(subset=['EMA', 'MACD', 'Signal', 'RSI'], inplace=True)
-if df.empty:
-    st.warning("No valid data after indicator calculation.")
+    st.error("No data for selected ticker.")
     st.stop()
 
-df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
-df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
-
-# --- Insights ---
-st.subheader("Insights 📊")
-latest = df.iloc[-1]
-trend = "🚀 Bullish (Close > EMA)" if latest['Close'] > latest['EMA'] else "🐻 Bearish (Close ≤ EMA)"
-rsi_status = "🔴 Overbought" if latest['RSI'] > 70 else "⚪ Neutral"
-
-st.markdown(f"- **Buy Signals:** {df['Buy'].sum()} ✅")
-st.markdown(f"- **Sell Signals:** {df['Sell'].sum()} ❌")
-st.markdown(f"- **Latest RSI:** {latest['RSI']:.2f} {rsi_status}")
-st.markdown(f"- **Latest Close Price:** ₹{latest['Close']:.2f} 💰")
-st.markdown(f"- **Trend:** {trend}")
-
-# --- Plotting ---
-st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
-
-fig = go.Figure()
-
-if mode == 'Intraday':
-    df.index = df.index.tz_convert('Asia/Kolkata')
-    df_today = df.between_time("09:15", "15:30")
-    buys = df_today[df_today['Buy']]
-    sells = df_today[df_today['Sell']]
-
-    fig.add_trace(go.Candlestick(
-        x=df_today.index,
-        open=df_today['Open'],
-        high=df_today['High'],
-        low=df_today['Low'],
-        close=df_today['Close'],
-        name='Price'
-    ))
-else:
-    buys = df[df['Buy']]
-    sells = df[df['Sell']]
-
-    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
-
-fig.add_trace(go.Scatter(x=df.index, y=df['EMA'], mode='lines', name=f'EMA{ema_period}', line=dict(color='orange')))
-
-fig.add_trace(go.Scatter(x=buys.index, y=buys['High'] * 1.01, mode='markers', name='Buy Signal',
-                         marker=dict(symbol='triangle-up', color='green', size=14)))
-fig.add_trace(go.Scatter(x=sells.index, y=sells['Low'] * 0.998, mode='markers', name='Sell Signal',
-                         marker=dict(symbol='triangle-down', color='red', size=12)))
-
-fig.update_layout(
-    xaxis_title="Date" if mode == 'Daily' else "Time",
-    yaxis_title="Price (₹)",
-    legend=dict(x=0, y=1),
-    hovermode='x unified',
-    template='plotly_white',
-    height=700,
-    width=1100,
-    xaxis_rangeslider_visible=False
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# --- Data Table ---
-st.write("Recent Signal Data:")
-st.dataframe(df.tail(10))
+st.line_chart(df['Close'])
