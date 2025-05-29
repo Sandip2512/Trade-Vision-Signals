@@ -3,46 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-import random
-import time
-
-# --- NSE stock fetch with session and headers to avoid 403 ---
-@st.cache_data(ttl=3600)
-def fetch_all_nse_stocks():
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:100.0) Gecko/20100101 Firefox/100.0",
-    ]
-
-    session = requests.Session()
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://www.nseindia.com/market-data/live-equity-market",
-        "Origin": "https://www.nseindia.com",
-    }
-
-    try:
-        # Visit homepage to get cookies
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        time.sleep(random.uniform(1, 2))
-
-        # Fetch stock list JSON
-        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        data = response.json()
-        symbols = [item['symbol'] + ".NS" for item in data['data']]
-        return sorted(symbols)
-
-    except Exception as e:
-        st.error(f"Error fetching NSE stocks list: {e}")
-        # fallback tickers
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -64,8 +24,20 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Fetch NSE tickers dynamically ---
-nse_tickers = fetch_all_nse_stocks()
+# --- Static fallback list of NSE tickers (extend this list as needed) ---
+nse_tickers = [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "HINDUNILVR.NS",
+    "KOTAKBANK.NS",
+    "LT.NS",
+    "SBIN.NS",
+    "AXISBANK.NS",
+    # Add more tickers here for a bigger universe
+]
 
 # --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
@@ -77,13 +49,13 @@ st.image(
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
 # --- User Inputs ---
-selected_ticker = st.selectbox("Choose NSE Stock", nse_tickers)
+selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    start = pd.to_datetime("today").normalize()
-    end = pd.to_datetime("today").normalize() + pd.Timedelta(days=1)
+    start = pd.to_datetime("today") - pd.Timedelta(days=5)
+    end = pd.to_datetime("today")
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
@@ -113,11 +85,6 @@ if df.empty:
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
-# --- Intraday filter for signals between 09:15 and 15:30 ---
-if mode == 'Intraday':
-    df.index = df.index.tz_localize(None).tz_localize('Asia/Kolkata')
-    df = df.between_time("09:15", "15:30")
-
 # --- Insights ---
 st.subheader("Insights 📊")
 latest = df.iloc[-1]
@@ -136,15 +103,17 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 fig = go.Figure()
 
 if mode == 'Intraday':
-    buys = df[df['Buy']]
-    sells = df[df['Sell']]
+    df.index = df.index.tz_convert('Asia/Kolkata')
+    df_today = df.between_time("09:15", "15:30")
+    buys = df_today[df_today['Buy']]
+    sells = df_today[df_today['Sell']]
 
     fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
+        x=df_today.index,
+        open=df_today['Open'],
+        high=df_today['High'],
+        low=df_today['Low'],
+        close=df_today['Close'],
         name='Price'
     ))
 else:
