@@ -3,135 +3,68 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 
-# EMA, MACD, RSI functions
-def EMA(series, period=20):
-    return series.ewm(span=period, adjust=False).mean()
-
-def MACD(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line
-
-def RSI(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period, min_periods=period).mean()
-    avg_loss = loss.rolling(window=period, min_periods=period).mean()
-    RS = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + RS))
-    return rsi
-
-@st.cache_data(ttl=300)
-def fetch_forex_data(pair='EURUSD'):
-    API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
-    url = (
-        f"https://www.alphavantage.co/query?"
-        f"function=FX_DAILY&from_symbol={pair[:3]}&to_symbol={pair[3:]}"
-        f"&outputsize=full&apikey={API_KEY}"
-    )
+# Fetch Binance crypto data (1m candlesticks)
+@st.cache_data(ttl=60)
+def fetch_binance_klines(symbol='BTCUSDT', interval='1m', limit=100):
+    url = f'https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
     response = requests.get(url)
-    data_json = response.json()
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        'Open Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close Time',
+        'Quote Asset Volume', 'Number of Trades', 'Taker Buy Base Asset Volume',
+        'Taker Buy Quote Asset Volume', 'Ignore'
+    ])
+    df['Open Time'] = pd.to_datetime(df['Open Time'], unit='ms')
+    df['Close Time'] = pd.to_datetime(df['Close Time'], unit='ms')
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        df[col] = df[col].astype(float)
+    return df[['Open Time', 'Open', 'High', 'Low', 'Close', 'Volume']]
 
-    if 'Error Message' in data_json:
-        st.error(f"API Error: {data_json['Error Message']}")
+# Fetch Gold (XAU/USD) intraday data from Twelve Data
+@st.cache_data(ttl=60)
+def fetch_gold_intraday(api_key, interval='1min', symbol='XAU/USD', outputsize=100):
+    url = f'https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={api_key}&outputsize={outputsize}'
+    response = requests.get(url)
+    data = response.json()
+    if "values" not in data:
+        st.error(f"Error fetching Gold data: {data.get('message', 'Unknown error')}")
         return pd.DataFrame()
-    if 'Note' in data_json:
-        st.error(f"API Note: {data_json['Note']}")
-        return pd.DataFrame()
-    
-    time_series_key = 'Time Series FX (Daily)'
-    if time_series_key not in data_json:
-        st.error("Unexpected API response format. No 'Time Series FX (Daily)' data found.")
-        return pd.DataFrame()
-    
-    ts = data_json[time_series_key]
-    df = pd.DataFrame.from_dict(ts, orient='index')
-    df.columns = ['open', 'high', 'low', 'close']
-    df = df.astype(float)
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
+    df = pd.DataFrame(data["values"])
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = df[col].astype(float)
+    df = df.rename(columns={'datetime':'Open Time', 'open':'Open', 'high':'High', 'low':'Low', 'close':'Close', 'volume':'Volume'})
+    df = df[['Open Time', 'Open', 'High', 'Low', 'Close', 'Volume']]
+    df = df.sort_values('Open Time')
     return df
 
-def generate_signals(df):
-    df['EMA'] = EMA(df['close'])
-    df['MACD'], df['Signal'] = MACD(df['close'])
-    df['RSI'] = RSI(df['close'])
-    df.dropna(inplace=True)
-
-    df['Buy'] = (
-        (df['close'] > df['EMA']) &
-        (df['MACD'] > df['Signal']) &
-        (df['MACD'].shift(1) < df['Signal'].shift(1)) &
-        (df['RSI'] < 60)
-    )
-    df['Sell'] = (
-        (df['close'] < df['EMA']) &
-        (df['MACD'] < df['Signal']) &
-        (df['MACD'].shift(1) > df['Signal'].shift(1)) &
-        (df['RSI'] > 60)
-    )
-    return df
-
-def plot_signals(df, title):
-    buys = df[df['Buy']]
-    sells = df[df['Sell']]
-
+# Plot function
+def plot_candles(df, title):
     fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Price'
+        x=df['Open Time'],
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close']
     )])
-
-    fig.add_trace(go.Scatter(
-        x=df.index,
-        y=df['EMA'],
-        mode='lines',
-        name='EMA',
-        line=dict(color='orange')
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=buys.index,
-        y=buys['high'] * 1.01,
-        mode='markers',
-        name='Buy Signal',
-        marker=dict(symbol='triangle-up', color='green', size=12)
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=sells.index,
-        y=sells['low'] * 0.99,
-        mode='markers',
-        name='Sell Signal',
-        marker=dict(symbol='triangle-down', color='red', size=12)
-    ))
-
-    fig.update_layout(
-        title=title,
-        xaxis_title="Date",
-        yaxis_title="Price",
-        template='plotly_white',
-        height=700
-    )
-
+    fig.update_layout(title=title, xaxis_title='Time', yaxis_title='Price', template='plotly_white')
     st.plotly_chart(fig, use_container_width=True)
 
 # Streamlit UI
-st.title("Forex Trading Signals")
+st.title("Intraday Crypto & Gold Price Viewer")
 
-forex_pairs = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD']
-pair = st.selectbox("Select Forex Pair", forex_pairs)
+option = st.selectbox("Select Asset", ['BTCUSDT (Crypto)', 'ETHUSDT (Crypto)', 'XAU/USD (Gold)'])
 
-df = fetch_forex_data(pair=pair)
-if not df.empty:
-    df = generate_signals(df)
-    plot_signals(df, title=f"{pair} Price with Buy/Sell Signals (Daily)")
-    st.dataframe(df.tail(10))
+if option == 'XAU/USD (Gold)':
+    api_key = st.text_input("Enter your Twelve Data API Key for Gold")
+    if api_key:
+        gold_df = fetch_gold_intraday(api_key)
+        if not gold_df.empty:
+            st.dataframe(gold_df.tail(10))
+            plot_candles(gold_df, 'Gold (XAU/USD) Intraday Prices')
 else:
-    st.warning("No data available or API limit reached.")
+    # Binance symbol for crypto
+    symbol = option.split()[0]
+    df = fetch_binance_klines(symbol=symbol)
+    st.dataframe(df.tail(10))
+    plot_candles(df, f'{symbol} Intraday Prices (1m Interval)')
