@@ -4,6 +4,25 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
+# --- Load NSE and BSE ticker lists ---
+@st.cache_data
+def load_tickers():
+    try:
+        nse_df = pd.read_csv('nse_stock_list.csv')  # Replace with your local file path
+        bse_df = pd.read_csv('bse_stock_list.csv')  # Replace with your local file path
+
+        # Extract tickers and add yfinance suffixes
+        nse_tickers = nse_df['Symbol'].astype(str).str.strip() + '.NS'
+        bse_tickers = bse_df['SC_CODE'].astype(str).str.strip() + '.BO'
+
+        # Combine and return as list
+        return sorted(list(nse_tickers) + list(bse_tickers))
+    except Exception as e:
+        st.error(f"Error loading ticker lists: {e}")
+        return []
+
+all_tickers = load_tickers()
+
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
@@ -24,27 +43,6 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Static list of popular NSE and BSE tickers ---
-nse_tickers = [
-    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-    "HINDUNILVR.NS", "KOTAKBANK.NS", "LT.NS", "SBIN.NS", "AXISBANK.NS"
-]
-
-bse_tickers = [
-    "500325.BO",  # Reliance Industries on BSE
-    "532540.BO",  # Tata Consultancy Services on BSE
-    "500209.BO",  # Infosys on BSE
-    "500180.BO",  # HDFC Bank on BSE
-    "532174.BO",  # ICICI Bank on BSE
-    "500696.BO",  # Hindustan Unilever on BSE
-    "500247.BO",  # Kotak Mahindra Bank on BSE
-    "500470.BO",  # Larsen & Toubro on BSE
-    "500112.BO",  # State Bank of India on BSE
-    "532215.BO"   # Axis Bank on BSE
-]
-
-combined_tickers = nse_tickers + bse_tickers
-
 # --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE & BSE Stocks")
 st.image(
@@ -55,26 +53,27 @@ st.image(
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
 # --- User Inputs ---
-selected_ticker = st.selectbox("Choose Stock (NSE & BSE)", sorted(combined_tickers))
+if not all_tickers:
+    st.warning("Ticker lists not loaded. Please ensure CSV files are present.")
+    st.stop()
+
+selected_ticker = st.selectbox("Choose Stock", all_tickers)
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    # For intraday, fetch last 7 days to ensure today data is covered
-    start = pd.to_datetime("today") - pd.Timedelta(days=7)
-    end = pd.to_datetime("today") + pd.Timedelta(days=1)
+    start = pd.to_datetime("today") - pd.Timedelta(days=5)
+    end = pd.to_datetime("today")
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
     end = st.date_input("End Date", pd.to_datetime("today"))
 
 # --- Fetch Data using yfinance ---
-df = yf.download(selected_ticker, start=start, end=end, interval=interval, progress=False)
-
+df = yf.download(selected_ticker, start=start, end=end, interval=interval)
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
     st.stop()
-
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
@@ -94,12 +93,6 @@ if df.empty:
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
-# --- For intraday mode: filter time between 09:15 and 15:30 IST ---
-if mode == 'Intraday':
-    # Convert index to Asia/Kolkata timezone (yfinance default is UTC)
-    df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
-    df = df.between_time("09:15", "15:30")
-
 # --- Insights ---
 st.subheader("Insights 📊")
 latest = df.iloc[-1]
@@ -118,15 +111,17 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 fig = go.Figure()
 
 if mode == 'Intraday':
-    buys = df[df['Buy']]
-    sells = df[df['Sell']]
+    df.index = df.index.tz_convert('Asia/Kolkata')
+    df_today = df.between_time("09:15", "15:30")
+    buys = df_today[df_today['Buy']]
+    sells = df_today[df_today['Sell']]
 
     fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
+        x=df_today.index,
+        open=df_today['Open'],
+        high=df_today['High'],
+        low=df_today['Low'],
+        close=df_today['Close'],
         name='Price'
     ))
 else:
