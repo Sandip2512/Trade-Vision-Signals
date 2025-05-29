@@ -45,7 +45,7 @@ st.title("Advanced Swing & Intraday Trading Strategy for NSE Stocks")
 
 # ✅ Updated Image Section
 st.image(
-    r"C:\Users\hp\Downloads\Stock bot\image\Image 1.jpg",
+    r"https://github.com/Sandip2512/Trade-Vision-Signals/blob/main/Image%201.jpg",
     caption="Market Trends 📈",
     use_container_width=True
 )
