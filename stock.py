@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-API_KEY = 'YOUR_FINNHUB_API_KEY'
+API_KEY = 'd0sa91pr01qkkplu0drgd0sa91pr01qkkplu0ds0'
 
 def fetch_finnhub_candle(symbol, asset_type, resolution='60', days=5):
     """
