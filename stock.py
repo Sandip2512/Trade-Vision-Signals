@@ -2,107 +2,139 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.graph_objects as go
+import pytz
 
-# Utility functions
+# ====== Indicators ======
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
 
-def generate_signals(df):
-    df['EMA20'] = EMA(df['close'], 20)
-    df['EMA50'] = EMA(df['close'], 50)
-    
-    df['Buy'] = (df['EMA20'] > df['EMA50']) & (df['EMA20'].shift(1) < df['EMA50'].shift(1))
-    df['Sell'] = (df['EMA20'] < df['EMA50']) & (df['EMA20'].shift(1) > df['EMA50'].shift(1))
-    return df
+def MACD(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line, signal_line
 
+def RSI(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# ====== Data Fetching ======
 @st.cache_data(ttl=300)
 def fetch_gold_data(api_key, interval):
-    url = (
-        f"https://api.twelvedata.com/time_series?"
-        f"symbol=XAU/USD&interval={interval}&outputsize=500&apikey={api_key}"
-    )
-    response = requests.get(url)
-    data = response.json()
-
-    if "values" not in data:
-        st.error("Error fetching data or API limit reached.")
-        return pd.DataFrame()
+    url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={interval}&outputsize=500&apikey={api_key}"
+    r = requests.get(url)
+    data = r.json()
     
-    df = pd.DataFrame(data["values"])
-    df.columns = [col.lower() for col in df.columns]
-    df = df[['datetime', 'open', 'high', 'low', 'close']]
-    df = df.astype({'open': float, 'high': float, 'low': float, 'close': float})
-    df['datetime'] = pd.to_datetime(df['datetime'])
+    if "values" not in data:
+        st.error(f"API Error: {data.get('message', 'Unexpected error')}")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data['values'])
+    df['datetime'] = pd.to_datetime(df['datetime']).dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
     df.set_index('datetime', inplace=True)
+    df = df.astype(float)
     df.sort_index(inplace=True)
     return df
 
-def plot_signals(df):
+# ====== Signal Generation ======
+def generate_signals(df):
+    df['EMA'] = EMA(df['close'], period=20)
+    df['MACD'], df['Signal'] = MACD(df['close'])
+    df['RSI'] = RSI(df['close'])
+
+    df.dropna(inplace=True)
+
+    df['Buy'] = (
+        (df['close'] > df['EMA']) &
+        (df['MACD'] > df['Signal']) &
+        (df['MACD'].shift(1) < df['Signal'].shift(1)) &
+        (df['RSI'] < 60)
+    )
+
+    df['Sell'] = (
+        (df['close'] < df['EMA']) &
+        (df['MACD'] < df['Signal']) &
+        (df['MACD'].shift(1) > df['Signal'].shift(1)) &
+        (df['RSI'] > 60)
+    )
+    return df
+
+# ====== Chart Plotting ======
+def plot_signals(df, title):
     fig = go.Figure()
 
     fig.add_trace(go.Candlestick(
         x=df.index,
-        open=df['open'], high=df['high'],
-        low=df['low'], close=df['close'],
-        name="Price"
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='Gold Price'
     ))
 
     fig.add_trace(go.Scatter(
-        x=df.index, y=df['EMA20'],
-        line=dict(color='blue'), name="EMA20"
+        x=df.index,
+        y=df['EMA'],
+        mode='lines',
+        name='EMA',
+        line=dict(color='orange')
     ))
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df['EMA50'],
-        line=dict(color='orange'), name="EMA50"
-    ))
-
-    # Plot Buy signals
     fig.add_trace(go.Scatter(
         x=df[df['Buy']].index,
-        y=df[df['Buy']]['low'] * 0.99,
+        y=df[df['Buy']]['low'] * 0.995,
         mode='markers',
-        marker=dict(symbol='triangle-up', color='green', size=12),
-        name='Buy'
+        name='Buy Signal',
+        marker=dict(symbol='triangle-up', size=12, color='green')
     ))
 
-    # Plot Sell signals
     fig.add_trace(go.Scatter(
         x=df[df['Sell']].index,
-        y=df[df['Sell']]['high'] * 1.01,
+        y=df[df['Sell']]['high'] * 1.005,
         mode='markers',
-        marker=dict(symbol='triangle-down', color='red', size=12),
-        name='Sell'
+        name='Sell Signal',
+        marker=dict(symbol='triangle-down', size=12, color='red')
     ))
 
     fig.update_layout(
-        title="Gold (XAU/USD) Buy & Sell Signals",
-        xaxis_title="Time",
-        yaxis_title="Price (USD)",
-        height=700,
-        template="plotly_white"
+        title=title,
+        xaxis_title='Date (IST)',
+        yaxis_title='Price',
+        template='plotly_white',
+        height=700
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# App UI
-st.title("📈 Gold Trading Signals (XAU/USD)")
-api_key = st.text_input("🔑 Enter your Twelve Data API Key", type="password")
+# ====== Streamlit UI ======
+st.title("Gold Buy/Sell Signals (XAU/USD)")
+api_key = st.text_input("🔐 Enter Your Twelve Data API Key", type='password')
 
 timeframes = ['5min', '15min', '30min', '1h', '4h', '1day']
 selected_tf = st.selectbox("⏱️ Select Timeframe", timeframes)
 
 if api_key:
     df = fetch_gold_data(api_key, selected_tf)
+
     if not df.empty:
         df = generate_signals(df)
-        plot_signals(df)
+        plot_signals(df, f"Gold (XAU/USD) - Buy/Sell Signals [{selected_tf}]")
 
-        # Show recent signal data
-        signals = df[df['Buy'] | df['Sell']].copy()
-        signals['Signal'] = signals.apply(lambda row: 'Buy' if row['Buy'] else 'Sell', axis=1)
-        signals = signals[['open', 'high', 'low', 'close', 'Signal']]
-        signals = signals.sort_index(ascending=False).head(10)
+        latest_signal = df[df['Buy'] | df['Sell']].iloc[-1:]  # Most recent signal
+        if not latest_signal.empty:
+            signal_time = latest_signal.index[0].strftime('%Y-%m-%d %H:%M')
+            if latest_signal['Buy'].iloc[0]:
+                st.success(f"✅ BUY signal at {signal_time} IST")
+            elif latest_signal['Sell'].iloc[0]:
+                st.error(f"❌ SELL signal at {signal_time} IST")
 
-        st.subheader("📊 Last 10 Signals")
-        st.dataframe(signals)
+        st.subheader("📊 Latest Candles with Signals")
+        st.dataframe(df.tail(10)[['open', 'high', 'low', 'close', 'EMA', 'RSI', 'MACD', 'Signal', 'Buy', 'Sell']])
+else:
+    st.info("Please enter your Twelve Data API key to continue.")
