@@ -3,25 +3,54 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests
+import os
 
-# --- Load NSE and BSE ticker lists ---
-@st.cache_data
-def load_tickers():
+# --- Function to fetch NSE tickers and save CSV ---
+def fetch_nse_tickers():
+    url = 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050'
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    session = requests.Session()
+    # get cookies from homepage first
+    session.get('https://www.nseindia.com', headers=headers)
+    response = session.get(url, headers=headers)
+    data = response.json()
+    symbols = [item['symbol'] + ".NS" for item in data['data']]  # Add .NS for yfinance NSE tickers
+    df = pd.DataFrame(symbols, columns=['Symbol'])
+    df.to_csv('nse_stock_list.csv', index=False)
+
+# --- Function to fetch BSE tickers and save CSV ---
+def fetch_bse_tickers():
+    # BSE does not provide a simple API, so let's use a static sample list for demo purposes
+    # You can replace this with an actual source or manual CSV upload
+    bse_sample_symbols = ['500325.BO', '500209.BO', '532540.BO']  # Example: Reliance, Tata Motors, Infosys (BSE codes + .BO)
+    df = pd.DataFrame(bse_sample_symbols, columns=['Symbol'])
+    df.to_csv('bse_stock_list.csv', index=False)
+
+# --- Ensure ticker files exist ---
+if not os.path.exists('nse_stock_list.csv'):
     try:
-        nse_df = pd.read_csv('nse_stock_list.csv')  # Replace with your local file path
-        bse_df = pd.read_csv('bse_stock_list.csv')  # Replace with your local file path
-
-        # Extract tickers and add yfinance suffixes
-        nse_tickers = nse_df['Symbol'].astype(str).str.strip() + '.NS'
-        bse_tickers = bse_df['SC_CODE'].astype(str).str.strip() + '.BO'
-
-        # Combine and return as list
-        return sorted(list(nse_tickers) + list(bse_tickers))
+        fetch_nse_tickers()
+        st.success("NSE ticker list fetched successfully.")
     except Exception as e:
-        st.error(f"Error loading ticker lists: {e}")
-        return []
+        st.error(f"Failed to fetch NSE tickers: {e}")
 
-all_tickers = load_tickers()
+if not os.path.exists('bse_stock_list.csv'):
+    try:
+        fetch_bse_tickers()
+        st.success("BSE ticker list saved.")
+    except Exception as e:
+        st.error(f"Failed to save BSE tickers: {e}")
+
+# --- Load ticker lists ---
+try:
+    nse_df = pd.read_csv('nse_stock_list.csv')
+    bse_df = pd.read_csv('bse_stock_list.csv')
+except Exception as e:
+    st.error(f"Error loading ticker lists: {e}")
+    st.stop()
+
+all_tickers = list(nse_df['Symbol']) + list(bse_df['Symbol'])
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -53,11 +82,7 @@ st.image(
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
 # --- User Inputs ---
-if not all_tickers:
-    st.warning("Ticker lists not loaded. Please ensure CSV files are present.")
-    st.stop()
-
-selected_ticker = st.selectbox("Choose Stock", all_tickers)
+selected_ticker = st.selectbox("Choose Stock (NSE or BSE)", sorted(all_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
