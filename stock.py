@@ -3,7 +3,20 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import pytz
+from nsetools import Nse
+
+# --- Fetch all NSE tickers dynamically ---
+@st.cache_data(ttl=86400)  # cache for 1 day
+def fetch_nse_tickers():
+    nse = Nse()
+    stock_dict = nse.get_stock_codes()
+    # Remove header key
+    if 'SYMBOL' in stock_dict:
+        del stock_dict['SYMBOL']
+    # Append .NS for yfinance
+    return [symbol + ".NS" for symbol in stock_dict.keys()]
+
+nse_tickers = fetch_nse_tickers()
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -25,20 +38,6 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Static list of popular NSE tickers (add more as needed) ---
-nse_tickers = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "INFY.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS",
-    "HINDUNILVR.NS",
-    "KOTAKBANK.NS",
-    "LT.NS",
-    "SBIN.NS",
-    "AXISBANK.NS"
-]
-
 # --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
 st.image(
@@ -52,16 +51,10 @@ st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
-# Define timezone for India
-india_tz = pytz.timezone('Asia/Kolkata')
-
 if mode == 'Intraday':
     interval = '5m'
-    
-    # Get today's date in India timezone, normalized to midnight
-    today_date = pd.Timestamp.now(tz=india_tz).normalize()
-    start = today_date
-    end = today_date + pd.Timedelta(days=1)
+    start = pd.to_datetime("today").normalize()  # today 00:00:00
+    end = pd.to_datetime("today").normalize() + pd.Timedelta(days=1)  # tomorrow 00:00:00 (to get full today data)
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
@@ -69,18 +62,15 @@ else:
 
 # --- Fetch Data using yfinance ---
 df = yf.download(selected_ticker, start=start, end=end, interval=interval)
-
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
     st.stop()
-
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
-# Convert to India timezone for intraday filtering
+# --- Filter Intraday data for today's trading hours only ---
 if mode == 'Intraday':
-    df.index = df.index.tz_convert('Asia/Kolkata')
-    # Filter only today's session time between 09:15 and 15:30
+    df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
     df = df.between_time("09:15", "15:30")
 
 # --- Indicators ---
@@ -92,11 +82,11 @@ df['MACD'], df['Signal'] = MACD(df['Close'])
 df['RSI'] = RSI(df['Close'], rsi_period)
 
 df.dropna(subset=['EMA', 'MACD', 'Signal', 'RSI'], inplace=True)
-
 if df.empty:
     st.warning("No valid data after indicator calculation.")
     st.stop()
 
+# --- Buy and Sell Signals ---
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
@@ -118,7 +108,6 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 fig = go.Figure()
 
 if mode == 'Intraday':
-    # Use df already filtered to today's session 9:15-15:30 IST
     buys = df[df['Buy']]
     sells = df[df['Sell']]
 
