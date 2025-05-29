@@ -28,13 +28,15 @@ def RSI(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ====== Aggregate Trades ======
+# ====== Aggregate Trades into Candles ======
 def aggregate_trades(trades, interval_seconds):
     if not trades:
         return pd.DataFrame()
+
     df = pd.DataFrame(trades)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
     df['candle_time'] = df['timestamp'].dt.floor(f'{interval_seconds}s')
+
     ohlc = df.groupby('candle_time').agg(
         open=('price', 'first'),
         high=('price', 'max'),
@@ -49,7 +51,6 @@ def generate_signals(df):
     df['EMA'] = EMA(df['close'], period=20)
     df['MACD'], df['Signal'] = MACD(df['close'])
     df['RSI'] = RSI(df['close'])
-
     df.dropna(inplace=True)
 
     df['Buy'] = (
@@ -67,7 +68,7 @@ def generate_signals(df):
     )
     return df
 
-# ====== Plot Signals ======
+# ====== Plot Chart ======
 def plot_signals(df, title):
     fig = go.Figure()
 
@@ -92,7 +93,7 @@ def plot_signals(df, title):
         x=df[df['Buy']].index.tz_convert('Asia/Kolkata'),
         y=df[df['Buy']]['low'] * 0.995,
         mode='markers',
-        name='Buy',
+        name='Buy Signal',
         marker=dict(symbol='triangle-up', size=12, color='green')
     ))
 
@@ -100,23 +101,22 @@ def plot_signals(df, title):
         x=df[df['Sell']].index.tz_convert('Asia/Kolkata'),
         y=df[df['Sell']]['high'] * 1.005,
         mode='markers',
-        name='Sell',
+        name='Sell Signal',
         marker=dict(symbol='triangle-down', size=12, color='red')
     ))
 
     fig.update_layout(
-        title=dict(text=title, x=0.5),
+        title=title,
         xaxis_title='Date (IST)',
         yaxis_title='Price',
         template='plotly_white',
         height=700
     )
 
-    # ⚠️ Important: Use theme=None for stable display
-    st.plotly_chart(fig, use_container_width=True, theme=None)
+    st.plotly_chart(fig, use_container_width=True)
 
 # ====== Streamlit UI ======
-st.title("Gold (XAU/USDT) Real-Time Buy/Sell Signals")
+st.title("BTC/USDT Real-Time Buy/Sell Signals")
 
 interval_map = {
     '5min': 300,
@@ -127,7 +127,7 @@ interval_map = {
     '1day': 86400
 }
 
-selected_tf = st.selectbox("Select Timeframe:", list(interval_map.keys()))
+selected_tf = st.selectbox("Select timeframe:", list(interval_map.keys()))
 
 chart_placeholder = st.empty()
 signal_placeholder = st.empty()
@@ -135,9 +135,8 @@ data_placeholder = st.empty()
 
 trade_buffer = []
 
-# ====== Binance WebSocket Listener ======
 async def binance_ws_listener():
-    uri = "wss://stream.binance.com:9443/ws/xauusdt@trade"
+    uri = "wss://stream.binance.com:9443/ws/btcusdt@trade"
     async with websockets.connect(uri) as websocket:
         while True:
             msg = await websocket.recv()
@@ -153,9 +152,8 @@ async def binance_ws_listener():
 
             if len(df_candles) > 20:
                 df_signals = generate_signals(df_candles)
-
                 chart_placeholder.empty()
-                plot_signals(df_signals, f"Gold (XAU/USDT) Signals [{selected_tf}]")
+                plot_signals(df_signals, f"BTC/USDT - Buy/Sell Signals [{selected_tf}]")
 
                 latest_signal = df_signals[(df_signals['Buy'] | df_signals['Sell'])].iloc[-1:]
                 if not latest_signal.empty:
@@ -165,20 +163,19 @@ async def binance_ws_listener():
                     elif latest_signal['Sell'].iloc[0]:
                         signal_placeholder.error(f"❌ SELL signal at {signal_time} IST")
                 else:
-                    signal_placeholder.info("No recent signal")
+                    signal_placeholder.info("No recent signals")
 
-                data_placeholder.dataframe(df_signals.tail(10)[[
-                    'open', 'high', 'low', 'close', 'EMA', 'RSI', 'MACD', 'Signal', 'Buy', 'Sell'
-                ]])
+                data_placeholder.dataframe(df_signals.tail(10)[
+                    ['open', 'high', 'low', 'close', 'EMA', 'RSI', 'MACD', 'Signal', 'Buy', 'Sell']
+                ])
 
             await asyncio.sleep(1)
 
-# ====== Main Execution ======
 def main():
     try:
         asyncio.run(binance_ws_listener())
     except RuntimeError:
-        pass  # streamlit rerun
+        pass
 
 if st.button("Start Real-Time Stream"):
     main()
