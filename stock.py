@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests
+from io import StringIO
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -24,13 +26,13 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Load NSE Tickers from GitHub mirror ---
+# --- Load NSE Tickers ---
 @st.cache_data(show_spinner=False)
 def load_nse_tickers():
-    url = "https://raw.githubusercontent.com/datasets/nse-india-equities/master/data/equities.csv"
+    url = "https://raw.githubusercontent.com/VarunKrishna99/NSE-Stock-Data/master/nse_stocks.csv"
     try:
         df = pd.read_csv(url)
-        return [symbol + ".NS" for symbol in df['Symbol'].dropna() if symbol.isalpha()]
+        return [symbol.strip() + ".NS" for symbol in df['Symbol'].dropna() if isinstance(symbol, str)]
     except Exception as e:
         st.error(f"Failed to fetch NSE tickers: {e}")
         return []
