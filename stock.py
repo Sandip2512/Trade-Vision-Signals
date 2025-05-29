@@ -3,8 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-from io import StringIO
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -26,32 +24,21 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Load NSE Tickers Only ---
-@st.cache_data(show_spinner=False)
-def load_nse_tickers():
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Referer": "https://www.nseindia.com/market-data/live-equity-market",
-    }
-    try:
-        session = requests.Session()
-        session.headers.update(headers)
-        # Initial request to set cookies
-        session.get("https://www.nseindia.com", timeout=5)
-        response = session.get(url, timeout=5)
-        response.raise_for_status()
-        df = pd.read_csv(StringIO(response.text))
-        # Return only NSE tickers with .NS suffix for yfinance
-        return [symbol + ".NS" for symbol in df['SYMBOL'].dropna() if symbol.isalpha()]
-    except Exception as e:
-        st.error(f"Failed to fetch NSE tickers: {e}")
-        return []
+# --- Static list of popular NSE tickers (add more as needed) ---
+nse_tickers = [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "HINDUNILVR.NS",
+    "KOTAKBANK.NS",
+    "LT.NS",
+    "SBIN.NS",
+    "AXISBANK.NS"
+]
 
-# --- Streamlit App ---
-
+# --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
 st.image(
     "https://raw.githubusercontent.com/Sandip2512/Trade-Vision-Signals/main/Image%201.jpg",
@@ -60,15 +47,8 @@ st.image(
 )
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
-# Load NSE tickers only
-tickers = load_nse_tickers()
-if not tickers:
-    st.warning("Unable to load NSE tickers. Please try again later.")
-    st.stop()
-
-# Select NSE stock only
-selected_ticker = st.selectbox("Choose NSE Stock", sorted(tickers))
-
+# --- User Inputs ---
+selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
@@ -80,7 +60,7 @@ else:
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
     end = st.date_input("End Date", pd.to_datetime("today"))
 
-# Fetch price data from yfinance
+# --- Fetch Data using yfinance ---
 df = yf.download(selected_ticker, start=start, end=end, interval=interval)
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
@@ -88,7 +68,7 @@ if df.empty:
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
-# Calculate indicators
+# --- Indicators ---
 ema_period = 20 if mode == 'Intraday' else 50
 rsi_period = 7 if mode == 'Intraday' else 14
 
@@ -101,11 +81,10 @@ if df.empty:
     st.warning("No valid data after indicator calculation.")
     st.stop()
 
-# Generate Buy/Sell signals
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
-# Display insights
+# --- Insights ---
 st.subheader("Insights 📊")
 latest = df.iloc[-1]
 trend = "🚀 Bullish (Close > EMA)" if latest['Close'] > latest['EMA'] else "🐻 Bearish (Close ≤ EMA)"
@@ -117,7 +96,7 @@ st.markdown(f"- **Latest RSI:** {latest['RSI']:.2f} {rsi_status}")
 st.markdown(f"- **Latest Close Price:** ₹{latest['Close']:.2f} 💰")
 st.markdown(f"- **Trend:** {trend}")
 
-# Plotting
+# --- Plotting ---
 st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 
 fig = go.Figure()
@@ -143,6 +122,7 @@ else:
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
 
 fig.add_trace(go.Scatter(x=df.index, y=df['EMA'], mode='lines', name=f'EMA{ema_period}', line=dict(color='orange')))
+
 fig.add_trace(go.Scatter(x=buys.index, y=buys['High'] * 1.01, mode='markers', name='Buy Signal',
                          marker=dict(symbol='triangle-up', color='green', size=14)))
 fig.add_trace(go.Scatter(x=sells.index, y=sells['Low'] * 0.998, mode='markers', name='Sell Signal',
@@ -161,6 +141,6 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# Show last 10 rows of data
+# --- Data Table ---
 st.write("Recent Signal Data:")
 st.dataframe(df.tail(10))
