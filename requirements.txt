@@ -1,6 +1,4 @@
 streamlit
+websocket-client
 pandas
-numpy
 plotly
-websockets
-pytz
