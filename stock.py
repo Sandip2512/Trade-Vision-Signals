@@ -1,41 +1,53 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import asyncio
-import websockets
-import json
 import threading
-from datetime import datetime
-import pytz
+import time
+import json
+import websocket  # pip install websocket-client
 import plotly.graph_objects as go
 
-# ====== Indicators ======
-def EMA(series, period=20):
-    return series.ewm(span=period, adjust=False).mean()
+# Initialize session state
+if 'trades' not in st.session_state:
+    st.session_state['trades'] = []
+if 'running' not in st.session_state:
+    st.session_state['running'] = False
 
-def MACD(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line
+# WebSocket callbacks
+def on_message(ws, message):
+    data = json.loads(message)
+    trade = {
+        'price': float(data['p']),
+        'quantity': float(data['q']),
+        'timestamp': int(data['T'])
+    }
+    st.session_state['trades'].append(trade)
 
-def RSI(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+def on_error(ws, error):
+    print(f"WebSocket error: {error}")
 
-# ====== Aggregate Trades into Candles ======
-def aggregate_trades(trades, interval_seconds):
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket closed")
+
+def on_open(ws):
+    print("WebSocket connection opened")
+
+# WebSocket thread function
+def ws_thread():
+    ws = websocket.WebSocketApp(
+        "wss://stream.binance.com:9443/ws/xauusdt@trade",
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+    ws.run_forever()
+
+# Aggregate trades into OHLC candles
+def aggregate_trades(trades, interval_seconds=300):
     if not trades:
         return pd.DataFrame()
-    
     df = pd.DataFrame(trades)
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df['candle_time'] = df['timestamp'].dt.floor(f'{interval_seconds}s')
     ohlc = df.groupby('candle_time').agg(
         open=('price', 'first'),
@@ -46,156 +58,45 @@ def aggregate_trades(trades, interval_seconds):
     )
     return ohlc
 
-# ====== Signal Generation ======
-def generate_signals(df):
-    df['EMA'] = EMA(df['close'], period=20)
-    df['MACD'], df['Signal'] = MACD(df['close'])
-    df['RSI'] = RSI(df['close'])
-    df.dropna(inplace=True)
-
-    df['Buy'] = (
-        (df['close'] > df['EMA']) &
-        (df['MACD'] > df['Signal']) &
-        (df['MACD'].shift(1) < df['Signal'].shift(1)) &
-        (df['RSI'] < 60)
-    )
-
-    df['Sell'] = (
-        (df['close'] < df['EMA']) &
-        (df['MACD'] < df['Signal']) &
-        (df['MACD'].shift(1) > df['Signal'].shift(1)) &
-        (df['RSI'] > 60)
-    )
-    return df
-
-# ====== Plot Chart ======
-def plot_signals(df, title):
+# Plot OHLC candles with Plotly
+def plot_candles(df):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
-        x=df.index.tz_convert('Asia/Kolkata'),
+        x=df.index,
         open=df['open'],
         high=df['high'],
         low=df['low'],
         close=df['close'],
-        name='Gold Price'
-    ))
-    fig.add_trace(go.Scatter(
-        x=df.index.tz_convert('Asia/Kolkata'),
-        y=df['EMA'],
-        mode='lines',
-        name='EMA',
-        line=dict(color='orange')
-    ))
-    fig.add_trace(go.Scatter(
-        x=df[df['Buy']].index.tz_convert('Asia/Kolkata'),
-        y=df[df['Buy']]['low'] * 0.995,
-        mode='markers',
-        name='Buy Signal',
-        marker=dict(symbol='triangle-up', size=12, color='green')
-    ))
-    fig.add_trace(go.Scatter(
-        x=df[df['Sell']].index.tz_convert('Asia/Kolkata'),
-        y=df[df['Sell']]['high'] * 1.005,
-        mode='markers',
-        name='Sell Signal',
-        marker=dict(symbol='triangle-down', size=12, color='red')
+        name='XAU/USDT'
     ))
     fig.update_layout(
-        title=title,
-        xaxis_title='Date (IST)',
-        yaxis_title='Price',
-        template='plotly_white',
-        height=700
+        title='XAU/USDT Real-Time Candlestick Chart',
+        xaxis_title='Time',
+        yaxis_title='Price (USDT)',
+        height=600
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# ====== Streamlit UI ======
-st.title("Gold (XAU/USDT) Real-Time Buy/Sell Signals")
+# Streamlit UI
+st.title("Gold (XAU/USDT) Real-Time Streaming Chart")
 
-interval_map = {
-    '5min': 300,
-    '15min': 900,
-    '30min': 1800,
-    '1h': 3600,
-    '4h': 14400,
-    '1day': 86400
-}
+interval_sec = st.selectbox("Select Candle Interval (seconds):", [300, 900, 1800, 3600], index=0)
 
-selected_tf = st.selectbox("Select timeframe:", list(interval_map.keys()))
-
-# Placeholders for updating UI from thread (must use st.empty)
-chart_placeholder = st.empty()
-signal_placeholder = st.empty()
-data_placeholder = st.empty()
-
-trade_buffer = []
-
-# We need to synchronize access to trade_buffer since thread and Streamlit main thread share it
-import threading
-buffer_lock = threading.Lock()
-
-async def binance_ws_listener():
-    uri = "wss://stream.binance.com:9443/ws/xauusdt@trade"
-    try:
-        async with websockets.connect(uri) as websocket:
-            while True:
-                try:
-                    msg = await websocket.recv()
-                    data = json.loads(msg)
-                    trade = {
-                        'price': float(data['p']),
-                        'quantity': float(data['q']),
-                        'timestamp': int(data['T'])
-                    }
-                    with buffer_lock:
-                        trade_buffer.append(trade)
-
-                    # Aggregate candles and generate signals safely
-                    with buffer_lock:
-                        df_candles = aggregate_trades(trade_buffer, interval_map[selected_tf])
-
-                    if len(df_candles) > 20:
-                        df_signals = generate_signals(df_candles)
-
-                        # Update UI using Streamlit placeholders
-                        # NOTE: Use streamlit's experimental features carefully with threads
-                        def update_ui():
-                            chart_placeholder.empty()
-                            plot_signals(df_signals, f"Gold (XAU/USDT) - Buy/Sell Signals [{selected_tf}]")
-
-                            latest_signal = df_signals[(df_signals['Buy'] | df_signals['Sell'])]
-                            if not latest_signal.empty:
-                                latest = latest_signal.iloc[-1]
-                                signal_time = latest_signal.index[-1].tz_convert('Asia/Kolkata').strftime('%Y-%m-%d %H:%M')
-                                if latest['Buy']:
-                                    signal_placeholder.success(f"✅ BUY signal at {signal_time} IST")
-                                elif latest['Sell']:
-                                    signal_placeholder.error(f"❌ SELL signal at {signal_time} IST")
-                            else:
-                                signal_placeholder.info("No recent signals")
-
-                            data_placeholder.dataframe(df_signals.tail(10)[
-                                ['open', 'high', 'low', 'close', 'EMA', 'RSI', 'MACD', 'Signal', 'Buy', 'Sell']
-                            ])
-
-                        # Streamlit runs in main thread only, so schedule update using st.experimental_rerun or session_state
-                        st.experimental_rerun()  # Force rerun to update UI on next cycle
-
-                    await asyncio.sleep(1)
-
-                except Exception as e:
-                    print(f"Error receiving websocket message: {e}")
-                    await asyncio.sleep(1)
-    except Exception as e:
-        print(f"Error connecting websocket: {e}")
-
-def run_ws():
-    asyncio.run(binance_ws_listener())
-
-if st.button("Start Real-Time Stream"):
-    # Start the websocket listener in a separate daemon thread
-    threading.Thread(target=run_ws, daemon=True).start()
-    st.info("WebSocket listener started. Please wait for data...")
-
+if not st.session_state['running']:
+    if st.button("Start Streaming"):
+        st.session_state['running'] = True
+        threading.Thread(target=ws_thread, daemon=True).start()
+        st.experimental_rerun()
 else:
-    st.info("Click 'Start Real-Time Stream' to begin live updates.")
+    st.write("Streaming live data...")
+
+    # Refresh every 5 seconds
+    while True:
+        if len(st.session_state['trades']) < 10:
+            st.write("Waiting for trade data...")
+        else:
+            df_candles = aggregate_trades(st.session_state['trades'], interval_seconds=interval_sec)
+            if not df_candles.empty:
+                plot_candles(df_candles.tail(50))
+        time.sleep(5)
+        st.experimental_rerun()
