@@ -1,11 +1,65 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 import requests
-from io import StringIO
-import yfinance as yf
-from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from datetime import datetime
+
+# Your Alpha Vantage API key here
+API_KEY = "LQM2XB6YQ8U6YOQY"
+
+# Define Forex pairs supported by Alpha Vantage
+FOREX_PAIRS = {
+    "EUR/USD": ("EUR", "USD"),
+    "GBP/USD": ("GBP", "USD"),
+    "USD/JPY": ("USD", "JPY"),
+    "AUD/USD": ("AUD", "USD"),
+    "USD/CAD": ("USD", "CAD"),
+    "USD/CHF": ("USD", "CHF"),
+    "NZD/USD": ("NZD", "USD"),
+}
+
+TIMEFRAMES = {
+    "15min": "15min",
+    "1h": "60min",
+    "4h": "60min",  # Alpha Vantage does not support 4h directly, we'll fetch 60min and resample
+}
+
+def fetch_forex_data(from_symbol, to_symbol, interval="15min"):
+    url = (
+        f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={from_symbol}"
+        f"&to_symbol={to_symbol}&interval={interval}&apikey={API_KEY}&outputsize=full"
+    )
+    response = requests.get(url)
+    data = response.json()
+
+    # Key in response
+    key = f"Time Series FX ({interval})"
+    if key not in data:
+        st.error("Error fetching data: " + str(data.get("Error Message", "API limit exceeded or bad request")))
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_dict(data[key], orient='index')
+    df = df.rename(columns={
+        "1. open": "Open",
+        "2. high": "High",
+        "3. low": "Low",
+        "4. close": "Close"
+    })
+
+    df = df.astype(float)
+    df.index = pd.to_datetime(df.index)
+    df.sort_index(inplace=True)
+    return df
+
+def resample_4h(df):
+    df_4h = df.resample('4H').agg({
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last'
+    }).dropna()
+    return df_4h
 
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
@@ -27,98 +81,80 @@ def RSI(series, period=14):
     rsi = 100 - (100 / (1 + RS))
     return rsi
 
-def fetch_coingecko_btc(days=30):
-    url = f"https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days={days}"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        prices = data['prices']  # list of [timestamp, price]
-        df = pd.DataFrame(prices, columns=['timestamp', 'price'])
-        df['Date'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('Date', inplace=True)
-        df = df.drop('timestamp', axis=1)
-        # CoinGecko prices are close-like values; we'll assume OHLC = price for simplicity
-        df['Open'] = df['price']
-        df['High'] = df['price']
-        df['Low'] = df['price']
-        df['Close'] = df['price']
-        return df
-    except Exception as e:
-        st.error(f"Failed to fetch BTC data from CoinGecko: {e}")
-        return pd.DataFrame()
+def generate_signals(df):
+    df['EMA20'] = EMA(df['Close'], 20)
+    df['EMA50'] = EMA(df['Close'], 50)
+    df['MACD'], df['Signal'] = MACD(df['Close'])
+    df['RSI'] = RSI(df['Close'], 14)
 
-st.title("Gold and BTC Trading Strategy with CoinGecko & Yahoo Finance")
+    df['Buy'] = (
+        (df['EMA20'] > df['EMA50']) &
+        (df['MACD'] > df['Signal']) &
+        (df['RSI'] < 70)
+    )
+    df['Sell'] = (
+        (df['EMA20'] < df['EMA50']) &
+        (df['MACD'] < df['Signal']) &
+        (df['RSI'] > 30)
+    )
+    return df
 
-option = st.selectbox("Select Asset", ["Bitcoin (BTC)", "Gold (GC=F)"])
+def plot_chart(df):
+    buys = df[df['Buy']]
+    sells = df[df['Sell']]
 
-if option == "Bitcoin (BTC)":
-    days = st.slider("Select number of days to fetch", 10, 90, 30)
-    data = fetch_coingecko_btc(days)
-    if data.empty:
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name="Price"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['EMA20'], mode='lines', name='EMA20', line=dict(color='orange')))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['EMA50'], mode='lines', name='EMA50', line=dict(color='purple')))
+
+    fig.add_trace(go.Scatter(
+        x=buys.index, y=buys['Close'],
+        mode='markers', name='Buy Signal',
+        marker=dict(symbol='triangle-up', color='green', size=12)))
+    fig.add_trace(go.Scatter(
+        x=sells.index, y=sells['Close'],
+        mode='markers', name='Sell Signal',
+        marker=dict(symbol='triangle-down', color='red', size=12)))
+
+    fig.update_layout(
+        title="Forex Price with Buy/Sell Signals",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        xaxis_rangeslider_visible=False,
+        height=700,
+        width=1100,
+        template='plotly_white'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# Streamlit UI
+
+st.title("Forex Price Action Strategy with Buy/Sell Signals")
+
+pair = st.selectbox("Select Forex Pair", list(FOREX_PAIRS.keys()))
+timeframe = st.selectbox("Select Timeframe", ["15min", "1h", "4h"])
+
+from_symbol, to_symbol = FOREX_PAIRS[pair]
+
+with st.spinner("Fetching data..."):
+    df = fetch_forex_data(from_symbol, to_symbol, interval=TIMEFRAMES[timeframe])
+    if df.empty:
         st.stop()
-else:
-    # Gold futures data using yfinance
-    start_date = st.date_input("Start Date", datetime.today() - timedelta(days=90))
-    end_date = st.date_input("End Date", datetime.today())
-    if start_date > end_date:
-        st.error("Start date must be before end date")
-        st.stop()
-    ticker = yf.Ticker("GC=F")
-    data = ticker.history(start=start_date, end=end_date)
-    if data.empty:
-        st.error("No data fetched for Gold")
-        st.stop()
+    if timeframe == "4h":
+        df = resample_4h(df)
 
-# Calculate indicators
-data['EMA'] = EMA(data['Close'], 20)
-data['MACD'], data['Signal'] = MACD(data['Close'])
-data['RSI'] = RSI(data['Close'], 14)
+df = generate_signals(df)
+plot_chart(df)
 
-data_clean = data.dropna(subset=['EMA', 'MACD', 'Signal', 'RSI'])
-
-data_clean['Buy'] = (
-    (data_clean['Close'] > data_clean['EMA']) &
-    (data_clean['MACD'] > data_clean['Signal']) &
-    (data_clean['MACD'].shift(1) < data_clean['Signal'].shift(1)) &
-    (data_clean['RSI'] < 60)
-)
-data_clean['Sell'] = (
-    (data_clean['Close'] < data_clean['EMA']) &
-    (data_clean['MACD'] < data_clean['Signal']) &
-    (data_clean['MACD'].shift(1) > data_clean['Signal'].shift(1)) &
-    (data_clean['RSI'] > 60)
-)
-
-st.subheader(f"{option} Price Chart with Buy/Sell Signals")
-
-buys = data_clean[data_clean['Buy']]
-sells = data_clean[data_clean['Sell']]
-
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(x=data_clean.index, y=data_clean['Close'],
-                         mode='lines', name='Close Price', line=dict(color='blue')))
-fig.add_trace(go.Scatter(x=data_clean.index, y=data_clean['EMA'],
-                         mode='lines', name='EMA20', line=dict(color='orange')))
-fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'],
-                         mode='markers', name='Buy Signal',
-                         marker=dict(symbol='triangle-up', color='green', size=12)))
-fig.add_trace(go.Scatter(x=sells.index, y=sells['Close'],
-                         mode='markers', name='Sell Signal',
-                         marker=dict(symbol='triangle-down', color='red', size=12)))
-
-fig.update_layout(
-    xaxis_title="Date",
-    yaxis_title="Price (USD)",
-    legend=dict(x=0, y=1),
-    hovermode='x unified',
-    template='plotly_white',
-    height=700,
-    width=1100,
-    xaxis_rangeslider_visible=True
-)
-
-st.plotly_chart(fig, use_container_width=True)
-st.write("Recent Signal Data:")
-st.dataframe(data_clean.tail(10))
+st.subheader("Recent Buy/Sell Signals")
+st.write(df[['Open', 'High', 'Low', 'Close', 'EMA20', 'EMA50', 'MACD', 'Signal', 'RSI', 'Buy', 'Sell']].tail(10))
