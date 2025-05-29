@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import pytz
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -51,10 +52,16 @@ st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
+# Define timezone for India
+india_tz = pytz.timezone('Asia/Kolkata')
+
 if mode == 'Intraday':
     interval = '5m'
-    start = pd.to_datetime("today") - pd.Timedelta(days=5)
-    end = pd.to_datetime("today")
+    
+    # Get today's date in India timezone, normalized to midnight
+    today_date = pd.Timestamp.now(tz=india_tz).normalize()
+    start = today_date
+    end = today_date + pd.Timedelta(days=1)
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
@@ -62,11 +69,19 @@ else:
 
 # --- Fetch Data using yfinance ---
 df = yf.download(selected_ticker, start=start, end=end, interval=interval)
+
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
     st.stop()
+
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
+
+# Convert to India timezone for intraday filtering
+if mode == 'Intraday':
+    df.index = df.index.tz_convert('Asia/Kolkata')
+    # Filter only today's session time between 09:15 and 15:30
+    df = df.between_time("09:15", "15:30")
 
 # --- Indicators ---
 ema_period = 20 if mode == 'Intraday' else 50
@@ -77,6 +92,7 @@ df['MACD'], df['Signal'] = MACD(df['Close'])
 df['RSI'] = RSI(df['Close'], rsi_period)
 
 df.dropna(subset=['EMA', 'MACD', 'Signal', 'RSI'], inplace=True)
+
 if df.empty:
     st.warning("No valid data after indicator calculation.")
     st.stop()
@@ -102,17 +118,16 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 fig = go.Figure()
 
 if mode == 'Intraday':
-    df.index = df.index.tz_convert('Asia/Kolkata')
-    df_today = df.between_time("09:15", "15:30")
-    buys = df_today[df_today['Buy']]
-    sells = df_today[df_today['Sell']]
+    # Use df already filtered to today's session 9:15-15:30 IST
+    buys = df[df['Buy']]
+    sells = df[df['Sell']]
 
     fig.add_trace(go.Candlestick(
-        x=df_today.index,
-        open=df_today['Open'],
-        high=df_today['High'],
-        low=df_today['Low'],
-        close=df_today['Close'],
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
         name='Price'
     ))
 else:
