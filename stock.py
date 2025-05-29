@@ -24,22 +24,29 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Static list of popular NSE tickers (add more as needed) ---
+# --- Static list of popular NSE and BSE tickers ---
 nse_tickers = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "INFY.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS",
-    "HINDUNILVR.NS",
-    "KOTAKBANK.NS",
-    "LT.NS",
-    "SBIN.NS",
-    "AXISBANK.NS"
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "KOTAKBANK.NS", "LT.NS", "SBIN.NS", "AXISBANK.NS"
 ]
 
+bse_tickers = [
+    "500325.BO",  # Reliance Industries on BSE
+    "532540.BO",  # Tata Consultancy Services on BSE
+    "500209.BO",  # Infosys on BSE
+    "500180.BO",  # HDFC Bank on BSE
+    "532174.BO",  # ICICI Bank on BSE
+    "500696.BO",  # Hindustan Unilever on BSE
+    "500247.BO",  # Kotak Mahindra Bank on BSE
+    "500470.BO",  # Larsen & Toubro on BSE
+    "500112.BO",  # State Bank of India on BSE
+    "532215.BO"   # Axis Bank on BSE
+]
+
+combined_tickers = nse_tickers + bse_tickers
+
 # --- App Header ---
-st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
+st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE & BSE Stocks")
 st.image(
     "https://raw.githubusercontent.com/Sandip2512/Trade-Vision-Signals/main/Image%201.jpg",
     caption="Market Trends 📊",
@@ -48,23 +55,26 @@ st.image(
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
 # --- User Inputs ---
-selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
+selected_ticker = st.selectbox("Choose Stock (NSE & BSE)", sorted(combined_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    start = pd.to_datetime("today") - pd.Timedelta(days=5)
-    end = pd.to_datetime("today")
+    # For intraday, fetch last 7 days to ensure today data is covered
+    start = pd.to_datetime("today") - pd.Timedelta(days=7)
+    end = pd.to_datetime("today") + pd.Timedelta(days=1)
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
     end = st.date_input("End Date", pd.to_datetime("today"))
 
 # --- Fetch Data using yfinance ---
-df = yf.download(selected_ticker, start=start, end=end, interval=interval)
+df = yf.download(selected_ticker, start=start, end=end, interval=interval, progress=False)
+
 if df.empty:
     st.error("No data retrieved. Try changing ticker or date range.")
     st.stop()
+
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
@@ -84,6 +94,12 @@ if df.empty:
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
+# --- For intraday mode: filter time between 09:15 and 15:30 IST ---
+if mode == 'Intraday':
+    # Convert index to Asia/Kolkata timezone (yfinance default is UTC)
+    df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
+    df = df.between_time("09:15", "15:30")
+
 # --- Insights ---
 st.subheader("Insights 📊")
 latest = df.iloc[-1]
@@ -102,17 +118,15 @@ st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
 fig = go.Figure()
 
 if mode == 'Intraday':
-    df.index = df.index.tz_convert('Asia/Kolkata')
-    df_today = df.between_time("09:15", "15:30")
-    buys = df_today[df_today['Buy']]
-    sells = df_today[df_today['Sell']]
+    buys = df[df['Buy']]
+    sells = df[df['Sell']]
 
     fig.add_trace(go.Candlestick(
-        x=df_today.index,
-        open=df_today['Open'],
-        high=df_today['High'],
-        low=df_today['Low'],
-        close=df_today['Close'],
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
         name='Price'
     ))
 else:
