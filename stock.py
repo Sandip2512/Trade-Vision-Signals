@@ -7,15 +7,15 @@ import requests
 import random
 import time
 
-# --- NSE Stock Fetcher with robust headers and cookies handling ---
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:100.0) Gecko/20100101 Firefox/100.0",
-]
-
-@st.cache_data(show_spinner=True)
+# --- NSE stock fetch with session and headers to avoid 403 ---
+@st.cache_data(ttl=3600)
 def fetch_all_nse_stocks():
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:100.0) Gecko/20100101 Firefox/100.0",
+    ]
+
     session = requests.Session()
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
@@ -24,36 +24,25 @@ def fetch_all_nse_stocks():
         "Referer": "https://www.nseindia.com/market-data/live-equity-market",
         "Origin": "https://www.nseindia.com",
     }
-    try:
-        # Step 1: Get NSE homepage to set cookies
-        url_home = "https://www.nseindia.com"
-        session.get(url_home, headers=headers, timeout=10)
-        time.sleep(random.uniform(1, 2))  # small delay
 
-        # Step 2: Now fetch stock list from API
-        url_api = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-        headers["User-Agent"] = random.choice(USER_AGENTS)  # rotate user agent again
-        response = session.get(url_api, headers=headers, timeout=10)
+    try:
+        # Visit homepage to get cookies
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        time.sleep(random.uniform(1, 2))
+
+        # Fetch stock list JSON
+        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+        response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         data = response.json()
         symbols = [item['symbol'] + ".NS" for item in data['data']]
         return sorted(symbols)
+
     except Exception as e:
-        st.warning(f"Error fetching NSE stocks list: {e}")
-        # Fallback list if API fails
-        return [
-            "RELIANCE.NS",
-            "TCS.NS",
-            "INFY.NS",
-            "HDFCBANK.NS",
-            "ICICIBANK.NS",
-            "HINDUNILVR.NS",
-            "KOTAKBANK.NS",
-            "LT.NS",
-            "SBIN.NS",
-            "AXISBANK.NS"
-        ]
+        st.error(f"Error fetching NSE stocks list: {e}")
+        # fallback tickers
+        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -75,6 +64,9 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
+# --- Fetch NSE tickers dynamically ---
+nse_tickers = fetch_all_nse_stocks()
+
 # --- App Header ---
 st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
 st.image(
@@ -84,18 +76,14 @@ st.image(
 )
 st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
-# --- Fetch NSE Stocks ---
-nse_tickers = fetch_all_nse_stocks()
-
 # --- User Inputs ---
 selected_ticker = st.selectbox("Choose NSE Stock", nse_tickers)
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    # For intraday, fetch last 5 days but show only today's signals 9:15-15:30
-    start = pd.Timestamp.now().normalize()  # midnight today
-    end = pd.Timestamp.now()
+    start = pd.to_datetime("today").normalize()
+    end = pd.to_datetime("today").normalize() + pd.Timedelta(days=1)
 else:
     interval = '1d'
     start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
@@ -125,10 +113,9 @@ if df.empty:
 df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
 df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
 
-# --- Filter intraday data to trading hours only if Intraday mode ---
+# --- Intraday filter for signals between 09:15 and 15:30 ---
 if mode == 'Intraday':
-    if df.index.tzinfo is None:
-        df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
+    df.index = df.index.tz_localize(None).tz_localize('Asia/Kolkata')
     df = df.between_time("09:15", "15:30")
 
 # --- Insights ---
