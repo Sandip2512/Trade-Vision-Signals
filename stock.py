@@ -26,7 +26,8 @@ def RSI(series, period=14):
 
 @st.cache_data(ttl=300)
 def fetch_forex_data(pair='EURUSD', interval='15min'):
-    API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]  # <-- Use secret here
+    API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
+# <-- Use secret here
 
     # Only supporting 15min interval here for simplicity
     url = (
