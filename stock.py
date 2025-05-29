@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import time
 
-# EMA, MACD, RSI functions (same as before)
+# Indicators
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
 
@@ -27,80 +24,96 @@ def RSI(series, period=14):
     rsi = 100 - (100 / (1 + RS))
     return rsi
 
-# CoinGecko API for crypto OHLC (unchanged)
+# Fetch Forex data from Alpha Vantage
 @st.cache_data(ttl=300)
-def fetch_ohlc_coin_gecko(coin_id, vs_currency='usd', days=1, interval='hourly'):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc?vs_currency={vs_currency}&days={days}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        return df
-    else:
-        st.error(f"Failed to fetch data from CoinGecko: {response.status_code}")
-        return pd.DataFrame()
-
-# Update: use your API key here
-API_KEY = "LQM2XB6YQ8U6YOQY"
-
-@st.cache_data(ttl=300)
-def fetch_forex_data(pair='EURUSD', interval='15min', days=5):
+def fetch_forex_data(pair='EURUSD', interval='15min'):
+    API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
     function_map = {
         '15min': 'FX_INTRADAY',
         '60min': 'FX_INTRADAY',
         '240min': 'FX_INTRADAY',
         '1day': 'FX_DAILY'
     }
-    
     if interval not in function_map:
-        st.error("Unsupported interval for Forex data.")
+        st.error("Unsupported interval")
         return pd.DataFrame()
-    
-    base_currency = pair[:3]
-    quote_currency = pair[3:]
-    
-    # Alpha Vantage expects intervals exactly as 15min, 60min, 240min etc. for intraday
-    # For daily data interval param is not needed
-    interval_param = interval if interval != '1day' else ''
-    
-    url = f"https://www.alphavantage.co/query?function={function_map[interval]}&from_symbol={base_currency}&to_symbol={quote_currency}"
-    if interval_param:
-        url += f"&interval={interval_param}"
-    url += f"&outputsize=full&apikey={API_KEY}"
-    
+
+    base = pair[:3]
+    quote = pair[3:]
+    func = function_map[interval]
+    intv = interval if interval != '1day' else ''
+    url = f"https://www.alphavantage.co/query?function={func}&from_symbol={base}&to_symbol={quote}&interval={intv}&outputsize=compact&apikey={API_KEY}"
     response = requests.get(url)
     if response.status_code != 200:
-        st.error("Error fetching Forex data from Alpha Vantage.")
+        st.error("Failed to fetch data from Alpha Vantage")
         return pd.DataFrame()
-    
-    data_json = response.json()
-    if 'Error Message' in data_json:
-        st.error(f"API Error: {data_json['Error Message']}")
-        return pd.DataFrame()
-    if 'Note' in data_json:
-        st.warning(f"API Note: {data_json['Note']}")
-        return pd.DataFrame()
-    
-    time_series_key = None
-    for key in data_json.keys():
+
+    data = response.json()
+    ts_key = None
+    for key in data.keys():
         if 'Time Series' in key:
-            time_series_key = key
+            ts_key = key
             break
-    if not time_series_key:
-        st.error("Unexpected API response format.")
+    if not ts_key:
+        st.error("No time series data found")
         return pd.DataFrame()
-    
-    ts = data_json[time_series_key]
-    df = pd.DataFrame.from_dict(ts, orient='index')
+
+    df = pd.DataFrame.from_dict(data[ts_key], orient='index')
     df.columns = ['open', 'high', 'low', 'close']
     df = df.astype(float)
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
     return df
 
-# Signals and plotting code remain the same
+# Generate buy/sell signals
+def generate_signals(df):
+    df['EMA'] = EMA(df['close'])
+    df['MACD'], df['Signal'] = MACD(df['close'])
+    df['RSI'] = RSI(df['close'])
+    df.dropna(inplace=True)
 
-# ... rest of your code ...
+    df['Buy'] = ((df['close'] > df['EMA']) &
+                 (df['MACD'] > df['Signal']) &
+                 (df['MACD'].shift(1) < df['Signal'].shift(1)) &
+                 (df['RSI'] < 60))
 
+    df['Sell'] = ((df['close'] < df['EMA']) &
+                  (df['MACD'] < df['Signal']) &
+                  (df['MACD'].shift(1) > df['Signal'].shift(1)) &
+                  (df['RSI'] > 60))
+    return df
+
+# Plot chart
+def plot_signals(df, title):
+    buys = df[df['Buy']]
+    sells = df[df['Sell']]
+
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'
+    )])
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA'], mode='lines', name='EMA', line=dict(color='orange')))
+    fig.add_trace(go.Scatter(x=buys.index, y=buys['high'] * 1.01, mode='markers', name='Buy Signal',
+                             marker=dict(symbol='triangle-up', color='green', size=12)))
+    fig.add_trace(go.Scatter(x=sells.index, y=sells['low'] * 0.99, mode='markers', name='Sell Signal',
+                             marker=dict(symbol='triangle-down', color='red', size=12)))
+
+    fig.update_layout(title=title, xaxis_title='Time', yaxis_title='Price', template='plotly_white', height=700)
+    st.plotly_chart(fig, use_container_width=True)
+
+# App UI
+st.title("Forex Trading Signals")
+
+forex_pairs = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD']
+pair = st.selectbox("Select Forex Pair", forex_pairs)
+timeframe = st.selectbox("Select Timeframe", ['15min', '60min', '240min'])
+
+data_load_state = st.text('Loading data...')
+data = fetch_forex_data(pair=pair, interval=timeframe)
+data_load_state.text('')
+
+if data.empty:
+    st.warning("No data available or API limit reached.")
+else:
+    data = generate_signals(data)
+    plot_signals(data, f"{pair} Price with Buy/Sell Signals ({timeframe} timeframe)")
+    st.dataframe(data.tail(10))
