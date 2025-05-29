@@ -27,26 +27,38 @@ def RSI(series, period=14):
 @st.cache_data(ttl=300)
 def fetch_forex_data(pair='EURUSD', interval='15min'):
     API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
-# <-- Use secret here
 
-    # Only supporting 15min interval here for simplicity
     url = (
         f"https://www.alphavantage.co/query?"
-        f"function=FX_INTRADAY&from_symbol={pair[:3]}&to_symbol={pair[3:]}&interval={interval}"
-        f"&outputsize=full&apikey={API_KEY}"
+        f"function=FX_INTRADAY&from_symbol={pair[:3]}&to_symbol={pair[3:]}"
+        f"&interval={interval}&outputsize=full&apikey={API_KEY}"
     )
     response = requests.get(url)
+
     if response.status_code != 200:
-        st.error("Error fetching Forex data from Alpha Vantage.")
+        st.error(f"Error fetching Forex data: HTTP {response.status_code}")
         return pd.DataFrame()
+
     data_json = response.json()
+
+    # Uncomment this to debug raw API response if needed:
+    # st.write("Raw API response:", data_json)
+
     if 'Error Message' in data_json:
         st.error(f"API Error: {data_json['Error Message']}")
         return pd.DataFrame()
-    time_series_key = next((k for k in data_json if 'Time Series' in k), None)
-    if not time_series_key:
-        st.error("Unexpected API response format.")
+
+    if 'Note' in data_json:
+        st.error(f"API Note: {data_json['Note']}")
         return pd.DataFrame()
+
+    # Find the Time Series key dynamically
+    time_series_key = next((key for key in data_json.keys() if "Time Series" in key), None)
+
+    if not time_series_key:
+        st.error("Unexpected API response format. No 'Time Series' data found.")
+        return pd.DataFrame()
+
     ts = data_json[time_series_key]
     df = pd.DataFrame.from_dict(ts, orient='index')
     df.columns = ['open', 'high', 'low', 'close']
