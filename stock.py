@@ -3,8 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-from io import StringIO
 
 # --- Technical Indicator Functions ---
 def EMA(series, period=20):
@@ -26,26 +24,13 @@ def RSI(series, period=14):
     RS = avg_gain / avg_loss
     return 100 - (100 / (1 + RS))
 
-# --- Load NSE Tickers ---
+# --- Load NSE Tickers from GitHub mirror ---
 @st.cache_data(show_spinner=False)
 def load_nse_tickers():
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Referer": "https://www.nseindia.com/market-data/live-equity-market",
-    }
+    url = "https://raw.githubusercontent.com/datasets/nse-india-equities/master/data/equities.csv"
     try:
-        session = requests.Session()
-        session.headers.update(headers)
-        # Initial request to get cookies
-        session.get("https://www.nseindia.com", timeout=5)
-        response = session.get(url, timeout=5)
-        response.raise_for_status()
-        df = pd.read_csv(StringIO(response.text))
-        return [symbol + ".NS" for symbol in df['SYMBOL'].dropna() if symbol.isalpha()]
+        df = pd.read_csv(url)
+        return [symbol + ".NS" for symbol in df['Symbol'].dropna() if symbol.isalpha()]
     except Exception as e:
         st.error(f"Failed to fetch NSE tickers: {e}")
         return []
