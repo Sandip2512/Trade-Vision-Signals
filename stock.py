@@ -25,10 +25,10 @@ def RSI(series, period=14):
     return rsi
 
 @st.cache_data(ttl=300)
-def fetch_gold_intraday(api_key, interval='15min'):
+def fetch_gold_intraday(api_key, symbol="XAU/USD", interval="15min"):
     url = (
         f"https://api.twelvedata.com/time_series?"
-        f"symbol=XAU/USD&interval={interval}&apikey={api_key}&format=JSON"
+        f"symbol={symbol}&interval={interval}&apikey={api_key}&format=JSON&outputsize=500"
     )
     response = requests.get(url)
     if response.status_code != 200:
@@ -38,25 +38,24 @@ def fetch_gold_intraday(api_key, interval='15min'):
     if "status" in data_json and data_json["status"] == "error":
         st.error(f"API Error: {data_json.get('message', 'Unknown error')}")
         return pd.DataFrame()
-    if 'values' not in data_json:
-        st.error("Unexpected API response format.")
+    if "values" not in data_json:
+        st.error("Unexpected API response format. No 'values' found.")
         return pd.DataFrame()
-    values = data_json['values']
-    df = pd.DataFrame(values)
+
+    df = pd.DataFrame(data_json["values"])
     df = df.rename(columns={
-        'datetime': 'date',
-        'open': 'open',
-        'high': 'high',
-        'low': 'low',
-        'close': 'close',
-        'volume': 'volume'
+        "datetime": "date",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume"
     })
-    # Convert columns to correct types
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
     for col in ['open', 'high', 'low', 'close']:
         df[col] = df[col].astype(float)
-    df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
-    df.sort_index(inplace=True)
     return df
 
 def generate_signals(df):
@@ -65,90 +64,75 @@ def generate_signals(df):
     df['RSI'] = RSI(df['close'])
     df.dropna(inplace=True)
 
-    df['Buy'] = (
-        (df['close'] > df['EMA']) &
-        (df['MACD'] > df['Signal']) &
-        (df['MACD'].shift(1) < df['Signal'].shift(1)) &
-        (df['RSI'] < 60)
-    )
-    df['Sell'] = (
-        (df['close'] < df['EMA']) &
-        (df['MACD'] < df['Signal']) &
-        (df['MACD'].shift(1) > df['Signal'].shift(1)) &
-        (df['RSI'] > 60)
-    )
+    # Simplified buy/sell signals to ensure signals appear:
+    df['Buy'] = (df['MACD'] > df['Signal']) & (df['RSI'] < 70)
+    df['Sell'] = (df['MACD'] < df['Signal']) & (df['RSI'] > 30)
     return df
 
-def plot_candlestick_with_signals(df):
+def plot_signals(df, title):
+    buys = df[df['Buy']]
+    sells = df[df['Sell']]
+
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
         open=df['open'],
         high=df['high'],
         low=df['low'],
         close=df['close'],
-        name='Gold Price'
+        name='Price'
     )])
 
-    # Plot Buy signals
-    buys = df[df['Buy']]
     fig.add_trace(go.Scatter(
-        x=buys.index,
-        y=buys['close'],
-        mode='markers',
-        marker=dict(symbol='triangle-up', color='green', size=15, opacity=0.9),
-        name='Buy Signal'
+        x=df.index,
+        y=df['EMA'],
+        mode='lines',
+        name='EMA',
+        line=dict(color='orange')
     ))
 
-    # Plot Sell signals
-    sells = df[df['Sell']]
+    fig.add_trace(go.Scatter(
+        x=buys.index,
+        y=buys['high'] * 1.01,
+        mode='markers',
+        name='Buy Signal',
+        marker=dict(symbol='triangle-up', color='green', size=12)
+    ))
+
     fig.add_trace(go.Scatter(
         x=sells.index,
-        y=sells['close'],
+        y=sells['low'] * 0.99,
         mode='markers',
-        marker=dict(symbol='triangle-down', color='red', size=15, opacity=0.9),
-        name='Sell Signal'
+        name='Sell Signal',
+        marker=dict(symbol='triangle-down', color='red', size=12)
     ))
 
     fig.update_layout(
-        title='Gold (XAU/USD) Intraday Price with Buy/Sell Signals',
-        xaxis_title='Time',
-        yaxis_title='Price (USD)',
-        xaxis=dict(
-            rangeslider=dict(visible=True),
-            rangeselector=dict(
-                buttons=list([
-                    dict(count=1, label="1d", step="day", stepmode="backward"),
-                    dict(count=7, label="1w", step="day", stepmode="backward"),
-                    dict(step="all")
-                ])
-            ),
-            showgrid=True,
-            tickfont=dict(size=12)
-        ),
-        yaxis=dict(
-            showgrid=True,
-            tickfont=dict(size=12)
-        ),
-        font=dict(size=14),
+        title=title,
+        xaxis_title="Time",
+        yaxis_title="Price",
         template='plotly_white',
-        width=1000,
-        height=600
+        height=700,
+        xaxis_rangeslider_visible=False
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
 # Streamlit UI
-st.title("Gold (XAU/USD) Intraday Trading Signals")
+st.title("Gold Intraday Trading Signals")
 
 api_key = st.text_input("Enter your Twelve Data API Key for Gold", type="password")
-
-if api_key:
-    gold_df = fetch_gold_intraday(api_key, interval='15min')
+if not api_key:
+    st.warning("Please enter your API key to fetch data.")
+else:
+    gold_df = fetch_gold_intraday(api_key)
     if not gold_df.empty:
         gold_df = generate_signals(gold_df)
-        plot_candlestick_with_signals(gold_df)
+
+        # Debug info - show counts of signals
+        st.write(f"Buy signals count: {gold_df['Buy'].sum()}")
+        st.write(f"Sell signals count: {gold_df['Sell'].sum()}")
+
+        plot_signals(gold_df, title="Gold Price with Buy/Sell Signals (15min)")
         st.dataframe(gold_df.tail(10))
     else:
         st.warning("No data available or API limit reached.")
-else:
-    st.info("Please enter your Twelve Data API Key to fetch Gold intraday data.")
