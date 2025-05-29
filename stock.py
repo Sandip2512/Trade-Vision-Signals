@@ -3,8 +3,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests
+from io import StringIO
 
-# --- Technical Indicator Functions ---
 def EMA(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
 
@@ -19,129 +20,239 @@ def RSI(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
     RS = avg_gain / avg_loss
-    return 100 - (100 / (1 + RS))
+    rsi = 100 - (100 / (1 + RS))
+    return rsi
 
-# --- Static fallback list of NSE tickers (extend this list as needed) ---
-nse_tickers = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "INFY.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS",
-    "HINDUNILVR.NS",
-    "KOTAKBANK.NS",
-    "LT.NS",
-    "SBIN.NS",
-    "AXISBANK.NS",
-    # Add more tickers here for a bigger universe
-]
+@st.cache_data(show_spinner=False)
+def load_nse_tickers():
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = StringIO(response.text)
+        df = pd.read_csv(data)
+        tickers = df['SYMBOL'].tolist()
+        tickers_ns = [ticker + ".NS" for ticker in tickers if ticker.isalpha()]
+        return tickers_ns
+    except Exception as e:
+        st.error(f"Error fetching NSE ticker list: {e}")
+        return []
 
-# --- App Header ---
-st.title("📈 Advanced Swing & Intraday Trading Strategy for NSE Stocks")
+def filter_signals(buy_indices, sell_indices):
+    filtered = []
+    i, j = 0, 0
+    last_signal = None  # 'buy' or 'sell'
+
+    buy_indices_sorted = sorted(buy_indices)
+    sell_indices_sorted = sorted(sell_indices)
+
+    while i < len(buy_indices_sorted) or j < len(sell_indices_sorted):
+        next_buy = buy_indices_sorted[i] if i < len(buy_indices_sorted) else None
+        next_sell = sell_indices_sorted[j] if j < len(sell_indices_sorted) else None
+
+        if next_buy is not None and (next_sell is None or next_buy < next_sell):
+            if last_signal != 'buy':
+                filtered.append(next_buy)
+                last_signal = 'buy'
+            i += 1
+        elif next_sell is not None:
+            if last_signal != 'sell':
+                filtered.append(next_sell)
+                last_signal = 'sell'
+            j += 1
+        else:
+            break
+
+    return filtered
+
+st.title("Advanced Swing & Intraday Trading Strategy for NSE Stocks")
+
 st.image(
-    "https://raw.githubusercontent.com/Sandip2512/Trade-Vision-Signals/main/Image%201.jpg",
-    caption="Market Trends 📊",
+    r"C:\Users\hp\Downloads\Stock bot\image\Image 1.jpg",
+    caption="Market Trends 📈",
     use_container_width=True
 )
-st.markdown("### Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
 
-# --- User Inputs ---
-selected_ticker = st.selectbox("Choose NSE Stock", sorted(nse_tickers))
+st.markdown("### 📊 Real-time Stock Market Signals with Buy/Sell Indicators 🚦")
+
+all_nse_tickers = load_nse_tickers()
+
+if not all_nse_tickers:
+    st.warning("NSE ticker list not loaded. Please try refreshing or check your connection.")
+    st.stop()
+
+selected_ticker = st.selectbox("Select NSE Stock", sorted(all_nse_tickers))
 mode = st.radio("Select Mode", ['Daily', 'Intraday'])
 
 if mode == 'Intraday':
     interval = '5m'
-    start = pd.to_datetime("today") - pd.Timedelta(days=5)
-    end = pd.to_datetime("today")
+    max_days = 5
+    start_date = pd.to_datetime("today") - pd.Timedelta(days=max_days)
+    end_date = pd.to_datetime("today")
 else:
     interval = '1d'
-    start = st.date_input("Start Date", pd.to_datetime("2023-01-01"))
-    end = st.date_input("End Date", pd.to_datetime("today"))
+    start_date = st.date_input("Start date", pd.to_datetime("2023-01-01"))
+    end_date = st.date_input("End date", pd.to_datetime("today"))
 
-# --- Fetch Data using yfinance ---
-df = yf.download(selected_ticker, start=start, end=end, interval=interval)
-if df.empty:
-    st.error("No data retrieved. Try changing ticker or date range.")
-    st.stop()
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
+if selected_ticker:
+    data_raw = yf.download(selected_ticker, start=start_date, end=end_date, interval=interval)
+    if isinstance(data_raw.columns, pd.MultiIndex):
+        data_raw.columns = data_raw.columns.get_level_values(0)
 
-# --- Indicators ---
-ema_period = 20 if mode == 'Intraday' else 50
-rsi_period = 7 if mode == 'Intraday' else 14
+    data = data_raw.copy()
 
-df['EMA'] = EMA(df['Close'], ema_period)
-df['MACD'], df['Signal'] = MACD(df['Close'])
-df['RSI'] = RSI(df['Close'], rsi_period)
+    if data.empty:
+        st.error("No data fetched. Try different dates or ticker.")
+    else:
+        ema_period = 20 if mode == 'Intraday' else 50
+        rsi_period = 7 if mode == 'Intraday' else 14
 
-df.dropna(subset=['EMA', 'MACD', 'Signal', 'RSI'], inplace=True)
-if df.empty:
-    st.warning("No valid data after indicator calculation.")
-    st.stop()
+        data['EMA'] = EMA(data['Close'], ema_period)
+        data['MACD'], data['Signal'] = MACD(data['Close'])
+        data['RSI'] = RSI(data['Close'], rsi_period)
 
-df['Buy'] = (df['Close'] > df['EMA']) & (df['MACD'] > df['Signal']) & (df['MACD'].shift(1) < df['Signal'].shift(1))
-df['Sell'] = (df['MACD'] < df['Signal']) | (df['RSI'] > 70)
+        indicators = ['EMA', 'MACD', 'Signal', 'RSI']
+        data_clean = data.dropna(subset=indicators)
 
-# --- Insights ---
-st.subheader("Insights 📊")
-latest = df.iloc[-1]
-trend = "🚀 Bullish (Close > EMA)" if latest['Close'] > latest['EMA'] else "🐻 Bearish (Close ≤ EMA)"
-rsi_status = "🔴 Overbought" if latest['RSI'] > 70 else "⚪ Neutral"
+        if data_clean.empty:
+            st.error("No data after indicator calculation. Try different range.")
+        else:
+            # Updated Buy and Sell Signals with Close < EMA in Sell condition
+            data_clean['Buy'] = (
+                (data_clean['Close'] > data_clean['EMA']) &
+                (data_clean['MACD'] > data_clean['Signal']) &
+                (data_clean['MACD'].shift(1) < data_clean['Signal'].shift(1)) &
+                (data_clean['RSI'] < 60)
+            )
+            data_clean['Sell'] = (
+                (data_clean['Close'] < data_clean['EMA']) &  # Added this condition here
+                (data_clean['MACD'] < data_clean['Signal']) &
+                (data_clean['MACD'].shift(1) > data_clean['Signal'].shift(1)) &
+                (data_clean['RSI'] > 60)
+            )
 
-st.markdown(f"- **Buy Signals:** {df['Buy'].sum()} ✅")
-st.markdown(f"- **Sell Signals:** {df['Sell'].sum()} ❌")
-st.markdown(f"- **Latest RSI:** {latest['RSI']:.2f} {rsi_status}")
-st.markdown(f"- **Latest Close Price:** ₹{latest['Close']:.2f} 💰")
-st.markdown(f"- **Trend:** {trend}")
+            buy_indices = data_clean.index[data_clean['Buy']].tolist()
+            sell_indices = data_clean.index[data_clean['Sell']].tolist()
 
-# --- Plotting ---
-st.subheader(f"{selected_ticker} Chart ({mode} Mode)")
+            filtered_indices = filter_signals(buy_indices, sell_indices)
 
-fig = go.Figure()
+            data_clean['Filtered_Buy'] = False
+            data_clean['Filtered_Sell'] = False
+            for idx in filtered_indices:
+                if idx in buy_indices:
+                    data_clean.at[idx, 'Filtered_Buy'] = True
+                else:
+                    data_clean.at[idx, 'Filtered_Sell'] = True
 
-if mode == 'Intraday':
-    df.index = df.index.tz_convert('Asia/Kolkata')
-    df_today = df.between_time("09:15", "15:30")
-    buys = df_today[df_today['Buy']]
-    sells = df_today[df_today['Sell']]
+            st.subheader("Insights 📈📉")
+            total_buys = data_clean['Filtered_Buy'].sum()
+            total_sells = data_clean['Filtered_Sell'].sum()
+            latest_rsi = data_clean['RSI'].iloc[-1]
+            latest_close = data_clean['Close'].iloc[-1]
+            latest_ema = data_clean['EMA'].iloc[-1]
+            trend = "Bullish (Close > EMA) 🚀" if latest_close > latest_ema else "Bearish (Close <= EMA) 🐻"
 
-    fig.add_trace(go.Candlestick(
-        x=df_today.index,
-        open=df_today['Open'],
-        high=df_today['High'],
-        low=df_today['Low'],
-        close=df_today['Close'],
-        name='Price'
-    ))
-else:
-    buys = df[df['Buy']]
-    sells = df[df['Sell']]
+            st.markdown(f"- Total Buy Signals: **{total_buys}** ✅")
+            st.markdown(f"- Total Sell Signals: **{total_sells}** ❌")
+            st.markdown(f"- Latest RSI: **{latest_rsi:.2f}** {'(Overbought 🔴)' if latest_rsi > 70 else '(Neutral ⚪)'}")
+            st.markdown(f"- Latest Close Price: **₹{latest_close:.2f}** 💰")
+            st.markdown(f"- EMA{ema_period} Trend: **{trend}**")
 
-    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
+            st.subheader(f"{selected_ticker} Chart with Buy/Sell Signals ({mode} mode)")
 
-fig.add_trace(go.Scatter(x=df.index, y=df['EMA'], mode='lines', name=f'EMA{ema_period}', line=dict(color='orange')))
+            if mode == 'Intraday':
+                data_clean.index = data_clean.index.tz_convert('Asia/Kolkata')
+                today_ist = pd.Timestamp.now(tz='Asia/Kolkata').normalize()
 
-fig.add_trace(go.Scatter(x=buys.index, y=buys['High'] * 1.01, mode='markers', name='Buy Signal',
-                         marker=dict(symbol='triangle-up', color='green', size=14)))
-fig.add_trace(go.Scatter(x=sells.index, y=sells['Low'] * 0.998, mode='markers', name='Sell Signal',
-                         marker=dict(symbol='triangle-down', color='red', size=12)))
+                intraday_data = data_clean[
+                    (data_clean.index >= today_ist + pd.Timedelta(hours=9, minutes=15)) &
+                    (data_clean.index <= today_ist + pd.Timedelta(hours=15, minutes=30))
+                ]
 
-fig.update_layout(
-    xaxis_title="Date" if mode == 'Daily' else "Time",
-    yaxis_title="Price (₹)",
-    legend=dict(x=0, y=1),
-    hovermode='x unified',
-    template='plotly_white',
-    height=700,
-    width=1100,
-    xaxis_rangeslider_visible=False
-)
+                buys = intraday_data[intraday_data['Filtered_Buy']]
+                sells = intraday_data[intraday_data['Filtered_Sell']]
 
-st.plotly_chart(fig, use_container_width=True)
+                fig = go.Figure(data=[go.Candlestick(
+                    x=intraday_data.index,
+                    open=intraday_data['Open'],
+                    high=intraday_data['High'],
+                    low=intraday_data['Low'],
+                    close=intraday_data['Close'],
+                    name='Candlestick'
+                )])
 
-# --- Data Table ---
-st.write("Recent Signal Data:")
-st.dataframe(df.tail(10))
+                fig.add_trace(go.Scatter(
+                    x=intraday_data.index,
+                    y=intraday_data['EMA'],
+                    mode='lines',
+                    name=f'EMA{ema_period}',
+                    line=dict(color='orange')
+                ))
+
+                fig.add_trace(go.Scatter(
+                    x=buys.index,
+                    y=buys['High'] * 1.01,
+                    mode='markers',
+                    name='Buy Signal',
+                    marker=dict(symbol='triangle-up', color='#00FF00', size=16)
+                ))
+
+                fig.add_trace(go.Scatter(
+                    x=sells.index,
+                    y=sells['Low'] * 0.998,
+                    mode='markers',
+                    name='Sell Signal',
+                    marker=dict(symbol='triangle-down', color='#B22222', size=12)
+                ))
+
+                fig.update_layout(
+                    xaxis_title="Time",
+                    yaxis_title="Price (₹)",
+                    legend=dict(x=0, y=1),
+                    hovermode='x unified',
+                    template='plotly_white',
+                    height=700,
+                    width=1100,
+                    xaxis_rangeslider_visible=False
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+                st.write("Recent Signal Data:")
+                st.dataframe(intraday_data.tail(10))
+
+            else:
+                buys = data_clean[data_clean['Filtered_Buy']]
+                sells = data_clean[data_clean['Filtered_Sell']]
+
+                fig = go.Figure()
+
+                fig.add_trace(go.Scatter(x=data_clean.index, y=data_clean['Close'],
+                                         mode='lines', name='Close Price', line=dict(color='blue')))
+                fig.add_trace(go.Scatter(x=data_clean.index, y=data_clean['EMA'],
+                                         mode='lines', name=f'EMA{ema_period}', line=dict(color='orange')))
+
+                fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'],
+                                         mode='markers', name='Buy Signal',
+                                         marker=dict(symbol='triangle-up', color='green', size=12)))
+
+                fig.add_trace(go.Scatter(x=sells.index, y=sells['Close'],
+                                         mode='markers', name='Sell Signal',
+                                         marker=dict(symbol='triangle-down', color='red', size=12)))
+
+                fig.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Price (₹)",
+                    legend=dict(x=0, y=1),
+                    hovermode='x unified',
+                    template='plotly_white',
+                    height=700,
+                    width=1100,
+                    xaxis_rangeslider_visible=True
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+                st.write("Recent Signal Data:")
+                st.dataframe(data_clean.tail(10))
